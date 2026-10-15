@@ -3,6 +3,7 @@ The injection audit trail lives in the database and is never pruned."""
 
 from __future__ import annotations
 
+import shutil
 import time
 from pathlib import Path
 
@@ -23,18 +24,19 @@ def _expire(folder: Path, cutoff: float, keep: set[Path] = frozenset()) -> int:
 
 
 def _rotate(path: Path) -> bool:
+    """Copy, then truncate in place: Windows can't rename a log that the daemon's handler holds open."""
     if not path.exists() or path.stat().st_size < LOG_MAX_BYTES:
         return False
     for i in range(LOG_KEEP - 1, 0, -1):
         older = path.with_name(f"{path.name}.{i}")
         if older.exists():
-            older.rename(path.with_name(f"{path.name}.{i + 1}"))
-    path.rename(path.with_name(f"{path.name}.1"))
-    return True
+            older.replace(path.with_name(f"{path.name}.{i + 1}"))
+    shutil.copyfile(path, path.with_name(f"{path.name}.1"))
+    return _truncate(path)
 
 
 def _truncate(path: Path) -> bool:
-    """launchd's stdout files: launchd holds them open, so truncate in place instead of renaming."""
+    """Service stdout files are held open by the running process, so truncate in place instead of renaming."""
     if path.stat().st_size < LOG_MAX_BYTES:
         return False
     with open(path, "r+b") as f:

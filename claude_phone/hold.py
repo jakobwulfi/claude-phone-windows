@@ -95,5 +95,5 @@ def render() -> str:
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = base.with_suffix(".tmp.wav")
     _write_wav(tmp, frames, RATE)
-    tmp.rename(out)
+    tmp.replace(out)
     return f"sound:{base}"

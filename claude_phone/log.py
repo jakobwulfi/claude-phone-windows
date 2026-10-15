@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import logging.handlers
 
 from . import config
 
@@ -14,8 +13,8 @@ def get(name: str = "phone") -> logging.Logger:
     global _configured
     if not _configured:
         config.LOGS.mkdir(parents=True, exist_ok=True)
-        # Reopens the file after housekeeping rotates it, so long-lived processes follow the rotation.
-        h = logging.handlers.WatchedFileHandler(config.LOG_FILE)
+        # Housekeeping rotates by copy-and-truncate, so the handle stays valid; append mode keeps writes at the end.
+        h = logging.FileHandler(config.LOG_FILE, encoding="utf-8")
         h.setFormatter(logging.Formatter("%(asctime)s %(levelname)-5s %(name)s: %(message)s"))
         root = logging.getLogger("phone")
         root.addHandler(h)

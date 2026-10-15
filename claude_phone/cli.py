@@ -6,7 +6,6 @@ import argparse
 import json
 import os
 import shutil
-import signal
 import subprocess
 import sys
 import time
@@ -14,9 +13,14 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
+import psutil
+
 from . import config, keychain, registry
 
 RUN = config.HOME / "run"
+# Services outlive the console that ran `phone up`.
+DETACHED = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+STOP_TIMEOUT_S = 5
 MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{}"
 
 
@@ -56,10 +60,10 @@ def _pid(name: str) -> int | None:
     f = RUN / f"{name}.pid"
     try:
         pid = int(f.read_text())
-        os.kill(pid, 0)
-        return pid
     except (OSError, ValueError):
         return None
+    # Not os.kill(pid, 0): on Windows that terminates the process instead of probing it.
+    return pid if psutil.pid_exists(pid) else None
 
 
 def _spawn(name: str, argv: list[str]) -> None:
@@ -68,7 +72,7 @@ def _spawn(name: str, argv: list[str]) -> None:
         return
     RUN.mkdir(parents=True, exist_ok=True)
     out = open(config.LOGS / f"{name}.out", "a")
-    p = subprocess.Popen(argv, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+    p = subprocess.Popen(argv, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, creationflags=DETACHED)
     (RUN / f"{name}.pid").write_text(str(p.pid))
     print(f"{name}: started (pid {p.pid})")
 
@@ -78,13 +82,12 @@ def _stop(name: str) -> None:
     if not pid:
         print(f"{name}: not running")
         return
-    os.kill(pid, signal.SIGTERM)
-    for _ in range(50):
-        try:
-            os.kill(pid, 0)
-            time.sleep(0.1)
-        except OSError:
-            break
+    try:
+        proc = psutil.Process(pid)
+        proc.terminate()
+        proc.wait(timeout=STOP_TIMEOUT_S)
+    except (psutil.NoSuchProcess, psutil.TimeoutExpired):
+        pass
     (RUN / f"{name}.pid").unlink(missing_ok=True)
     print(f"{name}: stopped")
 
@@ -99,7 +102,7 @@ def ensure_model() -> None:
         print(f"downloading {p.name} ...")
         config.MODELS.mkdir(parents=True, exist_ok=True)
         urllib.request.urlretrieve(MODEL_URL.format(p.name), p.with_suffix(".part"))
-        p.with_suffix(".part").rename(p)
+        p.with_suffix(".part").replace(p)
 
 
 def py_argv(*args: str) -> list[str]:

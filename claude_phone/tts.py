@@ -102,7 +102,7 @@ def render(text: str, repo: str | None = None, voice: tuple[str, str | None] | N
             if provider == "say":
                 raise
             PROVIDERS["say"].render(text, None, tmp)  # never leave a call silent
-        tmp.rename(out)
+        tmp.replace(out)
     return f"sound:{base}"
 
 
@@ -139,7 +139,7 @@ def beep() -> str:
         )
         tmp = base.with_suffix(".tmp.wav")
         _write_wav(tmp, frames, rate)
-        tmp.rename(out)
+        tmp.replace(out)
     return f"sound:{base}"
 
 
