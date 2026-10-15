@@ -1,8 +1,9 @@
+import asyncio
 import math
 import struct
 import wave
 
-from claude_phone import stt, tts
+from claude_phone import daemon, stt, tts
 from claude_phone.daemon import browser_xml, caller_id
 from claude_phone.config import Settings
 from claude_phone.registry import Session
@@ -41,6 +42,43 @@ def test_speech_gate(tmp_path):
     _wav(tmp_path / "voice.wav", 1, 800)  # quiet handset speech: RMS ~565
     assert stt.speech_seconds(tmp_path / "quiet.wav") == 0
     assert stt.speech_seconds(tmp_path / "voice.wav") > 0.9
+
+
+def test_wav_complete_only_once_the_header_is_written(tmp_path):
+    (tmp_path / "empty.wav").write_bytes(b"")
+    (tmp_path / "partial.wav").write_bytes(b"RIFF\x00\x00\x00\x00WAVE")  # no fmt or data chunk yet
+    _wav(tmp_path / "done.wav", 0.1, 800)
+    assert not stt.wav_complete(tmp_path / "missing.wav")
+    assert not stt.wav_complete(tmp_path / "empty.wav")
+    assert not stt.wav_complete(tmp_path / "partial.wav")
+    assert stt.wav_complete(tmp_path / "done.wav")
+
+
+def test_transcribe_waits_for_freeswitch_to_finish_the_recording(tmp_path, monkeypatch):
+    path = tmp_path / "cj-1.wav"
+    path.write_bytes(b"")  # created when recording starts; the header lands just after hangup
+    monkeypatch.setattr(daemon, "recording_path", lambda name: path)
+
+    async def transcribe(p):
+        stt.speech_seconds(p)  # raised "fmt chunk and/or data chunk missing" before the fix
+        return "Green."
+    monkeypatch.setattr(stt, "transcribe", transcribe)
+
+    async def scenario():
+        async def finish():
+            await asyncio.sleep(0.3)
+            _wav(path, 0.5, 800)
+        writer = asyncio.create_task(finish())
+        text = await daemon.Controller.__new__(daemon.Controller).transcribe("cj-1")
+        await writer
+        return text
+    assert asyncio.run(scenario()) == "Green."
+
+
+def test_transcribe_gives_up_on_a_missing_recording(tmp_path, monkeypatch):
+    monkeypatch.setattr(daemon, "recording_path", lambda name: tmp_path / "gone.wav")
+    monkeypatch.setattr(daemon, "RECORDING_WAIT", 0.2)
+    assert asyncio.run(daemon.Controller.__new__(daemon.Controller).transcribe("gone")) == ""
 
 
 def test_noise_transcripts_discarded():

@@ -33,6 +33,16 @@ def speech_seconds(path: Path, threshold: int = 200) -> float:
     return voiced / 50
 
 
+def wav_complete(path: Path) -> bool:
+    """True once the WAV has its header and data chunk. FreeSWITCH creates the file when recording
+    starts but only finishes the header on close, a moment after the hangup."""
+    try:
+        with wave.open(str(path), "rb"):
+            return True
+    except (wave.Error, EOFError, OSError):
+        return False
+
+
 def vocabulary() -> str:
     """Prompt whisper with live repo and branch names so it spells them right."""
     words: set[str] = set()

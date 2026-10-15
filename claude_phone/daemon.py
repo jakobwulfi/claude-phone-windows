@@ -22,6 +22,7 @@ VOICEMAIL_MESSAGE = ("{owner} didn't answer. A voicemail has been left. Carry on
 ANSWER_PREFIX = "[Phone answer to your earlier question]"
 ALLHANDS_PREFIX = "[All-hands message from {owner}, sent to every session]"
 HOLD_MAX = 600  # seconds on hold before the message is taken anyway
+RECORDING_WAIT = 3.0  # seconds to wait after hangup for FreeSWITCH to finish writing the recording
 # Hangup causes that mean "didn't pick up": no answer, busy, DND (480/486/603), unreachable.
 NOT_ANSWERED = "not answered"
 # Missed-call reasons where a push would only repeat what the owner knows, or disturb a meeting.
@@ -394,9 +395,8 @@ class Controller:
     async def transcribe(self, name: str) -> str | None:
         """Transcript ('' if silent), or None on failure."""
         path = recording_path(name)
-        for _ in range(20):  # the file is finalised just after hangup
-            if path.exists():
-                break
+        deadline = time.monotonic() + RECORDING_WAIT
+        while not stt.wav_complete(path) and time.monotonic() < deadline:  # finalised just after hangup
             await asyncio.sleep(0.1)
         if not path.exists():
             lg.warning("recording %s missing", path)
