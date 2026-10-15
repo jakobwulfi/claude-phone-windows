@@ -125,7 +125,35 @@ the Windows voice rather than going silent. Each repo can have its own voice (`r
 ### The phone's screen and meetings (optional)
 
 With `screen_push = true` and a Yealink desk phone, every call and announcement also leaves a short summary on the
-phone's screen. Meeting alerts (`meeting_alerts`) have no calendar source on Windows yet; an ICS feed is planned.
+phone's screen.
+
+**Meeting alerts** read your calendar's ICS feed. Shortly before each meeting (`meeting_warn_minutes`, default 2)
+the phone whispers a warning on its speaker, shows the meeting, and switches DND on. Claude's calls are held
+(voicemail, no pushes) until the meeting ends, or until you switch DND off. All-day, cancelled and declined events,
+events marked "free", and anything over 24 hours (trips, out of office) are ignored, and a meeting in both
+calendars counts once. Times come from each event's own time zone and are shown in this PC's.
+
+1. Install the calendar libraries (about 1.5 MB, pure Python, and only loaded when meeting alerts are on):
+   `.venv\Scripts\python -m pip install "icalendar>=7" "recurring-ical-events>=3.8" tzdata`. On a fresh setup,
+   `pip install -e .[calendar]` (instead of `-e .` in Setup step 4) does the same. Don't rerun that one while claude-phone or Claude Code
+   is running: `phone.exe` is in use and the reinstall fails halfway.
+2. Copy your calendar's secret link:
+   - **Google Calendar:** Settings → your calendar → Integrate calendar → **Secret address in iCal format**.
+   - **Outlook:** Settings → Calendar → Shared calendars → Publish a calendar → *Can view all details* → **ICS**
+     link. Some work accounts don't allow publishing.
+3. Run `phone calendar add google` (or `outlook`) in your own terminal and paste the link. The link is a password
+   (anyone with it can read your calendar), so it's kept in Credential Manager and never shown or logged.
+4. In config.toml:
+   ```toml
+   meeting_alerts = true
+   calendar_sources = ["google"]   # or ["outlook"], or both
+   # calendar_email = "you@example.com"  # to skip meetings you declined, if your calendar isn't named after it
+   ```
+   Then run `phone restart daemon`.
+
+`phone meetings` lists the next two days as the alerts see them, and `phone calendar` shows each feed's state.
+Feeds are re-read every `calendar_refresh_minutes` (default 5). Google and Outlook also take a while to update
+their feeds, so a meeting booked a few minutes ahead can be missed.
 
 ### Missed-call pushes (ntfy)
 

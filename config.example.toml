@@ -32,3 +32,11 @@ operator_voice = "Microsoft Zira Desktop"
 
 # Call summaries on a Yealink desk phone's screen (docs/t31p-setup.md step 11)
 # screen_push = true
+
+# Meeting alerts from your calendar's ICS feed (README: "The phone's screen and meetings").
+# Store the feed's secret link first: phone calendar add google   (or outlook)
+# meeting_alerts = true
+# meeting_warn_minutes = 2
+# calendar_sources = ["google"]    # "google", "outlook", or both
+# calendar_refresh_minutes = 5
+# calendar_email = "you@example.com"  # to skip meetings you declined; default: the calendar's name, if an address

@@ -130,8 +130,8 @@ Summaries of calls then show on the phone's screen.
 ## 13. DND key (optional)
 
 So the phone's DND key and the daemon agree: switching DND on holds Claude's calls, and switching it off releases
-them. With meeting alerts on, the PC also switches DND on for each meeting. Meeting alerts have no calendar source
-on Windows yet, so for now this is just the key.
+them. With meeting alerts on (README: "The phone's screen and meetings"), the PC also switches DND on for each
+meeting, and switching it off ends that meeting's hold early.
 
 1. **Features → Remote Control → Action URI Allow IP List**: `<pc-ip>`. Confirm.
 2. **Features → Action URL**: Open DND `http://<pc-ip>:8766/dnd/on`, Close DND `http://<pc-ip>:8766/dnd/off`. Confirm.

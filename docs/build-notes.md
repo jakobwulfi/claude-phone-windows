@@ -86,7 +86,27 @@ Claude Code moves MCP calls that run longer than 120 s to the background
 - Do Not Disturb rejects with 480; 480/486/603 are treated as "not answered".
 - The screen shows 17 characters of caller ID before scrolling.
 
-## 8. Speech
+## 8. Meeting alerts (ICS feeds)
+
+The Mac version read the Calendar app (EventKit). Windows has no shared calendar store to read, so meetings come
+from the ICS feed that Google Calendar and Outlook publish (`claude_phone/diary.py`).
+
+- **Recurrence and time zones** are `icalendar` + `recurring-ical-events`: RRULE, EXDATE and moved occurrences
+  (RECURRENCE-ID) are where a hand-written parser goes wrong. Outlook names zones the Windows way ("Pacific Standard
+  Time") with a VTIMEZONE in the feed, which `icalendar` turns into a real zone. Floating times count as the PC's.
+- **Google ignores "if modified":** its feeds come with no ETag or Last-Modified and `no-store`, so every refresh
+  downloads the whole feed. It's sent gzipped on request (120 KB → 12 KB for a holiday calendar), and a sha256 of
+  the body skips the parse when nothing changed. Only the days around now are kept from a parse.
+- **Declined meetings:** Google keeps them in the feed with your ATTENDEE at `PARTSTAT=DECLINED`, and names a
+  primary calendar after its owner's address, which is how "you" is found without `calendar_email`. Outlook removes
+  declined meetings from the calendar itself.
+- **The link is a password** (a secret token in the URL), so it lives in Credential Manager, is read without echo,
+  and is replaced by `<link>` in any error message.
+- `pip install -e .` while claude-phone runs fails halfway: `phone.exe` is held open by the daemon and the MCP
+  servers, and pip has already removed the old install by then. Stop it first (`phone down` and close Claude
+  sessions), or install the extra's libraries by name.
+
+## 9. Speech
 
 - **whisper.cpp:** whisper-server keeps the model loaded. Live repo and branch names are passed as the prompt, or
   names like "lemon stand" come back as near-misses. 8 kHz phone audio is fine. On a 6-core CPU without a GPU
