@@ -6,3 +6,4 @@ vscode-extension/out/
 *.vsix
 *.stackdump
 .claude/settings.local.json
+docs/windows-port.md
