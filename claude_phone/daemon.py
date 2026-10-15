@@ -12,7 +12,7 @@ from pathlib import Path
 
 from aiohttp import web
 
-from . import config, diary, hold, housekeeping, inject, keychain, log, push, registry, screen, stt, tts
+from . import config, diary, hold, housekeeping, inject, keychain, log, push, registry, screen, stt, transcript, tts
 from .esl import ESL, Call, Hangup, new_id, originate_vars
 
 lg = log.get("daemon")
@@ -332,10 +332,23 @@ class Controller:
         return text if result == "sent" else None
 
     async def mid_task(self, ext: int) -> bool:
-        """The hooks say a turn is running. VS Code can't show us the terminal's screen, so after an Esc
-        interrupt (which fires no Stop hook) this stays 'working' until the next turn ends; '#' skips the hold."""
+        """The hooks say a turn is running, and it wasn't interrupted. '#' skips the hold either way."""
         sess = registry.by_ext(ext)
-        return bool(sess and sess.status == "working")
+        return bool(sess and await self.still_working(sess))
+
+    async def still_working(self, sess: registry.Session) -> bool:
+        """Esc fires no Stop hook, so a 'working' session whose transcript ends in an interrupt is marked idle."""
+        if sess.status != "working":
+            return False
+        try:
+            stopped = await asyncio.to_thread(transcript.interrupted, sess.session_id)
+        except Exception as e:
+            lg.warning("transcript check for %s failed: %r", sess.ext, e)
+            return True
+        if stopped:
+            registry.set_status(sess.session_id, "idle")
+            lg.info("session %s was interrupted with Esc: idle", sess.ext)
+        return not stopped
 
     async def hold(self, call: Call, sess: registry.Session) -> None:
         """If the session is mid-task, play hold music until its turn ends. Hash skips the wait; the
@@ -802,7 +815,8 @@ class Controller:
     async def http_session_list(self, request: web.Request) -> web.Response:
         """Live sessions and the system's state, for the VS Code status bar."""
         sessions = [{"ext": x.ext, "label": x.label, "repo": x.repo, "branch": x.branch, "worktree": x.worktree,
-                     "status": x.status, "term_id": x.term_id} for x in registry.all_sessions()]
+                     "status": "working" if await self.still_working(x) else "idle", "term_id": x.term_id}
+                    for x in registry.all_sessions()]
         return web.json_response({"sessions": sessions, "health": await self.health()})
 
 

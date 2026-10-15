@@ -301,7 +301,7 @@ def main() -> None:
     sp.add_argument("text")
     sp.set_defaults(fn=cmd_type)
     sp = sub.add_parser("hook")
-    sp.add_argument("event", choices=["session-start", "session-end", "prompt", "stop", "idle"])
+    sp.add_argument("event", choices=["session-start", "session-end", "prompt", "stop"])
     sp.set_defaults(fn=cmd_hook)
     sub.add_parser("daemon").set_defaults(fn=cmd_daemon)
     sub.add_parser("mcp").set_defaults(fn=cmd_mcp)

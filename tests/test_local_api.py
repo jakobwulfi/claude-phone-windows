@@ -60,3 +60,19 @@ def test_browser_requests_are_refused():
 def test_rebound_host_names_are_refused():
     status, _ = asyncio.run(get("/health", {"Host": "evil.example:8765"}))
     assert status == 403
+
+
+def test_session_list_shows_a_session_interrupted_with_esc_as_idle():
+    import json
+    from claude_phone import transcript
+    registry.register("c", "site-be-v2", "main", None, "/r", "vscode:100")
+    registry.set_status("c", "working")  # UserPromptSubmit ran; Esc ran no Stop hook
+    folder = transcript.projects_dir() / "c--r"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "c.jsonl").write_text(json.dumps(
+        {"type": "user", "message": {"content": "[Request interrupted by user]"}}) + "\n", encoding="utf-8")
+
+    status, body = asyncio.run(get("/sessions"))
+
+    assert status == 200 and body["sessions"][0]["status"] == "idle"
+    assert registry.find("c").status == "idle"

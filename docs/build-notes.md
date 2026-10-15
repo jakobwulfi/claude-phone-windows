@@ -56,8 +56,11 @@ restarting `claude` in the tab. The MCP server also gets `CLAUDE_CODE_SESSION_ID
 calls carry no subagent id, hence the optional `from_agent` input. The SessionEnd hook has a 1.5 s default
 timeout, so it is a single SQLite delete.
 
-Esc skips the Stop hook, so a Notification hook on `idle_prompt` (about 60 s after Claude stops) marks the session
-idle again.
+Esc runs no hook (Stop doesn't fire on an interrupt), so a session would stay "working" and callers would get hold
+music until its next turn. Claude Code writes the interrupt to the session's transcript at once
+(`~/.claude/projects/<project>/<session id>.jsonl`, a user message starting `[Request interrupted by user`), so the
+daemon checks the end of the transcript before holding a call and when listing sessions. A Notification hook on
+`idle_prompt` was tried first: it never fired in VS Code's terminal.
 
 ## 5. Timeouts
 
