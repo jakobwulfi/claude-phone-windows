@@ -1,15 +1,30 @@
 # Yealink T31P setup
 
-Below, `<phone-ip>` is the phone's address (press **OK** when idle to see it) and `<mac-ip>` is the Mac's
-(`phone status` prints it; `lan_ip` in config.toml pins it).
+Below, `<phone-ip>` is the phone's address (press **OK** when idle to see it) and `<pc-ip>` is this PC's
+(`lan_ip`: `phone status` warns if it moves; `lan_ip` in `~/.claude-phone/config.toml` pins it). `<sip-port>` is
+`sip_port` from the same file: **5070** while Linphone runs on this PC (it holds 5060 itself), else 5060.
 
 ## 1. DHCP reservation (on the router)
 
-Recommended. The Mac's address matters most: the phones register to it and Asterisk binds to it.
-Reserve it on the router (its MAC is in `ifconfig en0 | grep ether`), then pin it in `~/.claude-phone/config.toml`
-as `lan_ip`. `phone status` and the daemon log warn if it changes. Reserving the phone's address too is optional.
+Recommended. The PC's address matters most: FreeSWITCH binds to it and the phone registers to it.
+Reserve it on the router (the PC's MAC is the "Physical Address" of its adapter in `ipconfig /all`), then pin it
+in `~/.claude-phone/config.toml` as `lan_ip` and run `phone restart`. `phone status` and the daemon log warn if
+it changes. Reserving the phone's address too is optional.
 
-## 2. Factory reset
+## 2. Windows Firewall
+
+The phone reaches three things on the PC: SIP and call audio (FreeSWITCH) and the session list (the daemon). From
+an **admin** PowerShell in the repo:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\firewall.ps1
+```
+
+It opens UDP `<sip-port>`, UDP 16384-16484 (audio) and TCP 8766 (phonebook), for private networks and the local
+subnet only, and prints the rules. The PC's network must be **Private** (Settings → Network → your connection).
+Run it again after changing `sip_port` or `phonebook_port`.
+
+## 3. Factory reset
 
 Worth doing on a second-hand phone, which may still point at an old provider's provisioning server.
 
@@ -17,12 +32,12 @@ Worth doing on a second-hand phone, which may still point at an old provider's p
    (Or: Menu → Settings → Advanced Settings, password `admin` → Reset Config → Reset to Factory.)
 2. Wait for it to reboot (2-3 minutes). Check its IP: press **OK** once when idle. Note it as `<phone-ip>`.
 
-## 3. Web admin
+## 4. Web admin
 
 1. Open **https://\<phone-ip\>** and accept the self-signed certificate warning. Port 80 is off.
 2. Log in as `admin` / `admin`. Set a new admin password when asked (Security → Password if not).
 
-## 4. Stop old provisioning
+## 5. Stop old provisioning
 
 **Settings → Auto Provision**
 - PNP Active: **Off**
@@ -30,9 +45,9 @@ Worth doing on a second-hand phone, which may still point at an old provider's p
 - Server URL: **empty**
 - Confirm.
 
-## 5. Register as extension 200
+## 6. Register as extension 200
 
-Get the SIP password on the Mac: `phone secret sip`
+Get the SIP password on the PC: `phone secret sip`
 
 **Account → Register → Account 1**
 | Field | Value |
@@ -43,77 +58,86 @@ Get the SIP password on the Mac: `phone secret sip`
 | Register Name | 200 |
 | User Name | 200 |
 | Password | *(from `phone secret sip`)* |
-| SIP Server 1 | `<mac-ip>`, port 5060 |
+| SIP Server 1 | `<pc-ip>`, port `<sip-port>` |
 | Transport | UDP |
 | Outbound Proxy | Disabled |
 
-Confirm. The status should change to **Registered** within a few seconds. On the Mac, `phone status` should list contact `200/sip:200@<phone-ip>`.
+Confirm. The status should change to **Registered** within a few seconds. On the PC, `phone status` should show
+`phone 200  sofia/internal/sip:200@<phone-ip>…`. If it stays unregistered, check step 2 and that `<pc-ip>` is the
+address in `phone status`.
 
-## 6. Codecs (G.722 first)
+## 7. Codecs (G.722 first)
 
 **Account → Codec → Account 1**: enabled list in this order: **G722, PCMU, PCMA**. Move everything else to Disabled. Confirm.
 
-## 7. Message key and light
+## 8. Message key and light
 
 **Account → Advanced → Account 1**
 - Voice Mail: **500**
-- Subscribe for MWI: **Disabled** (Asterisk sends unsolicited notifications; this is the default)
+- Subscribe for MWI: **Disabled** (FreeSWITCH sends unsolicited notifications; this is the default)
 
-Confirm. The power LED flashes red when there are questions waiting.
+Confirm. The power LED flashes red when there are questions waiting. (Linphone ignored these notifications in
+testing, so this is the first real check of the light.)
 
-## 8. Time
+## 9. Time
 
 **Settings → Time & Date**: your Time Zone, NTP server `pool.ntp.org`. Confirm.
 
-## 9. Test
+## 10. Test, and make the desk phone the one that rings
 
 1. Lift the handset and dial **600**: you should hear yourself (echo test).
-2. On the Mac, set `ring_ext = "200"` in `~/.claude-phone/config.toml` (remove the line; 200 is the default) and run `phone restart daemon`.
+2. On the PC, set `ring_ext = "200"` in `~/.claude-phone/config.toml` (or remove the line; 200 is the default) and
+   run `phone restart daemon`. From now on `call_<name>` rings the desk phone instead of Linphone. Linphone can stay
+   registered as 201 for dialling in; turn its auto-answer off.
 3. Dial **500**: you hear the voicemail menu.
+4. Run through the call flows once more on the desk phone: dial a session (301), let Claude call you, voicemail,
+   operator (0), all-hands (9).
 
 ## Notes
 
 - **DND:** the phone rejects calls with code 480. `call_<name>` treats that as "not answered" and leaves a voicemail.
 - **Caller ID length:** the T31P shows 17 characters, then scrolls the rest. `callerid_max` (17) trims the branch first, then the repo.
 
-## 10. Live session list
+## 11. Live session list
 
 **Claude soft key (live, use this).** The phone fetches the list on every press.
 **Dsskey → Programmable Key**: on the soft key that was Directory, set Type **XML Browser**, Label `Claude`,
-Value `http://<mac-ip>:8766/sessions.xml`. Confirm. Press it, pick a session, press Dial.
+Value `http://<pc-ip>:8766/sessions.xml`. Confirm. Press it, pick a session, press Dial.
 
 **Directory phonebook (cached).** Remote phonebooks refresh at most hourly, and nested folders are
 prefetched with the top level, so this list goes stale. Kept for completeness (Menu → Directory → Claude):
-**Directory → Remote Phone Book**: Remote URL 1 `http://<mac-ip>:8766/phonebook.xml`, Display Name 1 `Claude`.
+**Directory → Remote Phone Book**: Remote URL 1 `http://<pc-ip>:8766/phonebook.xml`, Display Name 1 `Claude`.
 
-Both URLs are on the LAN only (daemon refuses anything outside `lan_cidr`).
+Both URLs are on the LAN only (the daemon refuses anything outside `lan_cidr`). To check them before the phone
+arrives, open `http://<pc-ip>:8766/sessions.xml` in a browser; it lists the live sessions.
 
 ## Ringtones
 
 Each repo gets its own ringtone (1-8), sent as `Alert-Info: <http://127.0.0.1>;info=RingN`. The T31P plays it with no setup.
 `phone list` shows each repo's ring. To pin one: `[repo_ringtones]` in `~/.claude-phone/config.toml`, e.g. `lemon-stand = 3`.
 
-## 11. Screen messages (optional, for `screen_push`)
+## 12. Screen messages (optional, for `screen_push`)
 
-1. On the Mac, open **https://\<phone-ip\>** in a browser. It warns that the connection is not private
+1. On the PC, open **https://\<phone-ip\>** in a browser. It warns that the connection is not private
    (the phone's own certificate): click **Advanced**, then **Proceed**.
-2. Log in as `admin` with the password you set in step 3.
+2. Log in as `admin` with the password you set in step 4.
 3. **Features** tab → **Remote Control** (left menu).
-4. **Push XML Server IP Address**: `<mac-ip>`. Confirm.
+4. **Push XML Server IP Address**: `<pc-ip>`. Confirm.
+5. Set `screen_push = true` in `~/.claude-phone/config.toml` and run `phone restart daemon`.
 
-`phone meeting-test` checks it: the phone whispers and then shows a test meeting.
+Summaries of calls then show on the phone's screen.
 
-## 12. DND key (optional, with `meeting_alerts`)
+## 13. DND key (optional)
 
-So the phone's DND key and the meeting hold stay in step: the Mac switches DND on at each meeting alert and
-off when the meeting ends; switching DND off yourself ends the hold early (meeting finished early); switching
-it on outside a meeting holds Claude's calls too.
+So the phone's DND key and the daemon agree: switching DND on holds Claude's calls, and switching it off releases
+them. With meeting alerts on, the PC also switches DND on for each meeting. Meeting alerts have no calendar source
+on Windows yet, so for now this is just the key.
 
-1. **Features → Remote Control → Action URI Allow IP List**: `<mac-ip>`. Confirm.
-2. **Features → Action URL**: Open DND `http://<mac-ip>:8766/dnd/on`, Close DND `http://<mac-ip>:8766/dnd/off`. Confirm.
-3. On the Mac, store the phone's admin password: `security add-generic-password -U -s claude-phone -a desk-admin -w`,
-   then type the password at the prompt (not the command). Without it, only step 2 works: the DND key still
-   controls the hold, but the phone won't show DND during meetings.
+1. **Features → Remote Control → Action URI Allow IP List**: `<pc-ip>`. Confirm.
+2. **Features → Action URL**: Open DND `http://<pc-ip>:8766/dnd/on`, Close DND `http://<pc-ip>:8766/dnd/off`. Confirm.
+3. On the PC, store the phone's admin password in Windows Credential Manager:
+   `.venv\Scripts\python -m keyring set claude-phone desk-admin`, then type the password at the prompt. Without it,
+   only step 2 works: the DND key still controls the hold, but the PC can't switch the phone's DND itself.
 
 After a wrong password the phone locks its web login for a few minutes; the daemon stops trying after
 one refusal until it restarts.

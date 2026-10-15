@@ -25,7 +25,7 @@ MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{}"
 
 # --- FreeSWITCH ---
 
-# Media ports for calls; open these (UDP) and 5060 in Windows Firewall for a desk phone on the LAN.
+# Media ports for calls. scripts/firewall.ps1 opens these (UDP) and sip_port for a desk phone on the LAN.
 RTP_START, RTP_END = 16384, 16484
 
 
