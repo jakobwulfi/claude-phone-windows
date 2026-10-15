@@ -5,3 +5,4 @@ vscode-extension/node_modules/
 vscode-extension/out/
 *.vsix
 *.stackdump
+.claude/settings.local.json
