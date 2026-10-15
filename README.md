@@ -84,15 +84,17 @@ On any recording: `#` ends it, hanging up also ends it. In voicemail: `#` during
 
 ### Claude Code wiring
 
-Four hooks in `%USERPROFILE%\.claude\settings.json` (replace the path with your clone; merge into an existing
-`"hooks"` key):
+Five hooks in `%USERPROFILE%\.claude\settings.json` (replace the path with your clone; merge into an existing
+`"hooks"` key). The Notification hook marks a session idle about a minute after you interrupt it with Esc, which
+skips the Stop hook; otherwise callers would get hold music until its next turn ends:
 
 ```json
 "hooks": {
   "SessionStart":     [{ "hooks": [{ "type": "command", "command": "C:/path/to/claude-phone-windows/.venv/Scripts/phone.exe", "args": ["hook", "session-start"] }] }],
   "SessionEnd":       [{ "hooks": [{ "type": "command", "command": "C:/path/to/claude-phone-windows/.venv/Scripts/phone.exe", "args": ["hook", "session-end"] }] }],
   "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "C:/path/to/claude-phone-windows/.venv/Scripts/phone.exe", "args": ["hook", "prompt"] }] }],
-  "Stop":             [{ "hooks": [{ "type": "command", "command": "C:/path/to/claude-phone-windows/.venv/Scripts/phone.exe", "args": ["hook", "stop"] }] }]
+  "Stop":             [{ "hooks": [{ "type": "command", "command": "C:/path/to/claude-phone-windows/.venv/Scripts/phone.exe", "args": ["hook", "stop"] }] }],
+  "Notification":     [{ "matcher": "idle_prompt", "hooks": [{ "type": "command", "command": "C:/path/to/claude-phone-windows/.venv/Scripts/phone.exe", "args": ["hook", "idle"] }] }]
 }
 ```
 

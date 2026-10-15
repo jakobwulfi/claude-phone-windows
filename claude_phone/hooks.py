@@ -60,6 +60,10 @@ def run(event: str) -> int:
             registry.set_status(sid, "working")
         elif event == "stop":
             registry.set_status(sid, "idle")
+        elif event == "idle" and payload.get("notification_type") == "idle_prompt":
+            # Esc skips the Stop hook, so a session would stay "working" (and callers on hold) until its next turn.
+            # Claude Code sends idle_prompt about 60 s after the prompt goes quiet.
+            registry.set_status(sid, "idle")
     except Exception as e:  # never block Claude Code
         lg.warning("hook %s failed: %r", event, e)
     return 0
