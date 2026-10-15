@@ -48,6 +48,9 @@ class Settings:
     last_session_ext: int = 399
     freeswitch_exe: str = r"C:\Program Files\FreeSWITCH\FreeSwitchConsole.exe"
     esl_port: int = 8021  # FreeSWITCH's event socket, on 127.0.0.1 only
+    # Where the phones register. Linphone on the same PC holds 5060 itself (and resets any change on start),
+    # so FreeSWITCH then needs another port, e.g. 5070, with the phone's domain set to <lan_ip>:5070.
+    sip_port: int = 5060
     daemon_port: int = 8765
     whisper_port: int = 8910
     # On a Ryzen 5 5500 CPU: ~1.8 s per answer. large-v3-turbo-q5_0 took ~8.4 s (fine with a GPU), base.en-q5_1 ~0.55 s.

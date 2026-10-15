@@ -34,7 +34,8 @@ def render_freeswitch_config() -> None:
     if not s.lan_ip:
         sys.exit(f"No LAN address found: connect to the network, or set lan_ip in {config.CONFIG_FILE}")
     subs = {
-        "LAN_IP": s.lan_ip, "ESL_PORT": str(s.esl_port), "ESL_PASSWORD": keychain.get_or_create("esl"),
+        "LAN_IP": s.lan_ip, "SIP_PORT": str(s.sip_port),
+        "ESL_PORT": str(s.esl_port), "ESL_PASSWORD": keychain.get_or_create("esl"),
         "DESK_EXT": s.desk_ext, "SOFT_EXT": s.softphone_ext, "SIP_PASSWORD": keychain.get_or_create("sip"),
         "RTP_START": str(RTP_START), "RTP_END": str(RTP_END),
     }

@@ -5,9 +5,9 @@ A desk phone (or a softphone) becomes the line between you and your Claude Code 
 This is a Windows port of [risingpower/claude-phone](https://github.com/risingpower/claude-phone), which runs on
 macOS. [Watch the original in action](https://www.instagram.com/reel/DeY8JPmszXs/).
 
-> **Work in progress.** Typing into sessions, the voices and speech to text work on Windows. Call control on
-> FreeSWITCH (which replaces Asterisk) is being built, so calls can't be placed yet. Progress and the plan:
-> [docs/windows-port.md](docs/windows-port.md).
+> **Work in progress.** Typing into sessions, the voices, speech to text and FreeSWITCH (which replaces
+> Asterisk) run on Windows, and Linphone registers and passes the echo test. The call flows are being tested
+> end to end. Progress and the plan: [docs/windows-port.md](docs/windows-port.md).
 
 - **Claude rings you:** a session calls the `call_<name>` MCP tool (`call_sam` for `owner_name = "Sam"`). The phone rings with `repo/branch` as caller ID; the spoken answer comes back as the tool result.
 - **Claude announces:** `notify_<name>` rings, reads a short announcement and hangs up.
@@ -59,7 +59,11 @@ On any recording: `#` ends it, hanging up also ends it. In voicemail: `#` during
    `C:\tools\whisper\Release` to PATH, or set `whisper_server` in config.toml to the full path of
    `whisper-server.exe`. The first `phone up` downloads the speech model (`small.en`, ~190 MB; about 2 s per
    answer on a 6-core CPU, see `whisper_model` in config.example.toml for faster or more accurate ones).
-3. **FreeSWITCH:** being ported (Phase 4 of [docs/windows-port.md](docs/windows-port.md)).
+3. **FreeSWITCH:** install the Windows MSI (1.11.x) from the
+   [FreeSWITCH install page](https://developer.signalwire.com/freeswitch/FreeSWITCH-Explained/Installation/Windows-Install_1966780).
+   If it adds a "FreeSWITCH" Windows service, set it to Manual: `phone up` runs FreeSWITCH itself, with its own
+   config (two SIP accounts, nothing else) under `~/.claude-phone/freeswitch`. Allow it through Windows Firewall
+   on private networks when asked.
 4. **Python:** `py -3.13 -m venv .venv`, then `.venv\Scripts\pip install -e .`
 5. **VS Code extension:**
    ```powershell
@@ -68,7 +72,10 @@ On any recording: `#` ends it, hanging up also ends it. In voicemail: `#` during
    ```
    Reload VS Code. A phone icon in the status bar shows it's running; click it to list the window's terminals.
 6. **Config:** copy `config.example.toml` to `%USERPROFILE%\.claude-phone\config.toml` and set `owner_name`.
-   Set `ring_ext = "201"` to test on Linphone.
+   To test on Linphone on the same PC: `ring_ext = "201"` and `sip_port = 5070` (Linphone keeps 5060 for itself).
+   Then in Linphone add a third-party SIP account: username `201`, password from `phone secret sip`, domain
+   `<your LAN address>:5070` (`phone status` shows the address in its registrations), UDP. Dial **600**: you
+   should hear yourself.
 7. **Secrets** live in Windows Credential Manager (service `claude-phone`): `phone secret sip` prints the SIP
    password for the phones. ElevenLabs: `ELEVENLABS_API_KEY`, or `.venv\Scripts\python -m keyring set claude-phone elevenlabs`.
 8. **Claude Code wiring** (below), and add [docs/claude-md-snippet.md](docs/claude-md-snippet.md) to `~/.claude/CLAUDE.md`.
@@ -127,8 +134,8 @@ app. Pushes pass through the public ntfy.sh server; set `push_text = false` in c
 There's no start-at-logon yet; `phone up` starts everything.
 
 ```powershell
-phone up               # whisper-server and the daemon (each also: phone up daemon)
-phone status           # processes and daemon health
+phone up               # FreeSWITCH, whisper-server and the daemon (each also: phone up daemon)
+phone status           # processes, daemon health, registered phones
 phone list             # live sessions and extensions
 phone type 301 "text"  # type into a session as a phone message would
 phone vm               # pending voicemail questions
@@ -145,7 +152,9 @@ Get-Content -Wait $HOME\.claude-phone\logs\phone.log   # calls, transcripts, eve
 |---|---|
 | `~/.claude-phone/registry.db` | sessions, voicemails, injection log (SQLite) |
 | `~/.claude-phone/logs/phone.log` | the log to tail |
-| `~/.claude-phone/logs/{whisper,daemon}.out` | process output |
+| `~/.claude-phone/logs/{freeswitch,whisper,daemon}.out` | process output |
+| `~/.claude-phone/freeswitch/` | generated FreeSWITCH config (from `freeswitch/freeswitch.xml.tmpl`, `phone config`), its log and database |
+| `~/.claude-phone/recordings/` | what was said on calls, kept 30 days |
 | `~/.claude-phone/bridges/` | one file per VS Code window: how the daemon reaches its terminals |
 | `~/.claude-phone/sounds/` | TTS cache |
 
@@ -160,6 +169,11 @@ and a fake VS Code bridge: no phone exchange, audio, whisper or VS Code needed. 
 - **Text not typed:** the session must be in `phone list`, and its window must show the phone icon in the status
   bar. Sessions started before the hooks or the extension were installed have no extension: restart `claude`.
 - **`whisper-server not found`:** put its folder on PATH or set `whisper_server` in config.toml.
+- **Linphone times out registering:** Linphone on the same PC holds UDP 5060 and resets any change to it, so
+  FreeSWITCH's replies go astray. Set `sip_port = 5070`, run `phone restart freeswitch`, and use
+  `<LAN address>:5070` as Linphone's domain.
+- **Phone won't register or calls fail:** FreeSWITCH's log is `~/.claude-phone/freeswitch/log/freeswitch.log`;
+  `phone status` lists the registered phones.
 - **Wrong words for repo names:** whisper is prompted with live repo and branch names; check `phone list` spelling.
 
 [docs/build-notes.md](docs/build-notes.md) explains why the original was built the way it is (written for the Mac version).
