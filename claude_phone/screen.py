@@ -58,7 +58,7 @@ _login_failed = False
 
 
 async def press(key: str) -> bool:
-    """Yealink Action URI, e.g. press("DNDOn"). Needs the Mac in the phone's Action URI Allow IP List and the
+    """Yealink Action URI, e.g. press("DNDOn"). Needs this PC in the phone's Action URI Allow IP List and the
     phone's admin password in the keychain (desk-admin). After one refused login it stops trying until the
     daemon restarts: the phone locks its web login after a few failures."""
     global _login_failed

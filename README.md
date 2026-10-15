@@ -5,9 +5,9 @@ A desk phone (or a softphone) becomes the line between you and your Claude Code 
 This is a Windows port of [risingpower/claude-phone](https://github.com/risingpower/claude-phone), which runs on
 macOS. [Watch the original in action](https://www.instagram.com/reel/DeY8JPmszXs/).
 
-> **Work in progress.** Typing into sessions, the voices, speech to text and FreeSWITCH (which replaces
-> Asterisk) run on Windows, and Linphone registers and passes the echo test. The call flows are being tested
-> end to end. Progress and the plan: [docs/windows-port.md](docs/windows-port.md).
+> **Status:** every call flow works end to end on Windows with Linphone as the phone: dialling in, Claude
+> calling you, voicemail, hold music, the operator, all-hands, announcements and transfers. Next: a Yealink T31P
+> desk phone ([docs/t31p-setup.md](docs/t31p-setup.md)) and its message light, which Linphone doesn't show.
 
 - **Claude rings you:** a session calls the `call_<name>` MCP tool (`call_sam` for `owner_name = "Sam"`). The phone rings with `repo/branch` as caller ID; the spoken answer comes back as the tool result.
 - **Claude announces:** `notify_<name>` rings, reads a short announcement and hangs up.
@@ -22,8 +22,9 @@ you set them up.
 
 ## What you need
 
-- Windows 10 or 11 and VS Code. Claude Code must run in **VS Code's terminal**: the Claude Code panel and the
-  desktop app can't be typed into.
+- Windows 10 or 11 and VS Code. To dial in to a session, Claude Code must run in **VS Code's terminal**: nothing
+  can submit a prompt to the Claude Code chat panel or the desktop app from outside. Sessions there can still call
+  you. With the Claude Code extension, set `"claudeCode.useTerminal": true` so it opens sessions in a terminal.
 - Python 3.12+, Node.js LTS (to build the extension), ffmpeg, whisper.cpp and FreeSWITCH. About 200 MB of disk
   for the speech model.
 - [Linphone](https://linphone.org) (free) as the phone while testing. A SIP desk phone later: the original was
@@ -68,9 +69,10 @@ On any recording: `#` ends it, hanging up also ends it. In voicemail: `#` during
 5. **VS Code extension:**
    ```powershell
    cd vscode-extension; npm install; npm run package
-   code --install-extension claude-phone-0.1.0.vsix
+   code --install-extension claude-phone-0.2.0.vsix
    ```
-   Reload VS Code. A phone icon in the status bar shows it's running; click it to list the window's terminals.
+   Reload VS Code. The phone icon in the status bar shows how many sessions claude-phone knows (`off` when it isn't
+   running). Click it for the list with each session's extension; pick one to show its terminal.
 6. **Config:** copy `config.example.toml` to `%USERPROFILE%\.claude-phone\config.toml` and set `owner_name`.
    To test on Linphone on the same PC: `ring_ext = "201"` and `sip_port = 5070` (Linphone keeps 5060 for itself).
    Then in Linphone add a third-party SIP account: username `201`, password from `phone secret sip`, domain
@@ -79,6 +81,8 @@ On any recording: `#` ends it, hanging up also ends it. In voicemail: `#` during
 7. **Secrets** live in Windows Credential Manager (service `claude-phone`): `phone secret sip` prints the SIP
    password for the phones. ElevenLabs: `ELEVENLABS_API_KEY`, or `.venv\Scripts\python -m keyring set claude-phone elevenlabs`.
 8. **Claude Code wiring** (below), and add [docs/claude-md-snippet.md](docs/claude-md-snippet.md) to `~/.claude/CLAUDE.md`.
+   For the `/claude-phone` command, copy [claude/commands/claude-phone.md](claude/commands/claude-phone.md) to
+   `%USERPROFILE%\.claude\commands\` and replace `C:/path/to/claude-phone-windows` in it with your clone.
 9. **Try it:** start `claude` in two VS Code terminals. `phone list` shows them as 301 and 302, and
    `phone type 301 "what is 2+2"` types into the first one while you work in the other.
 
@@ -133,11 +137,13 @@ app. Pushes pass through the public ntfy.sh server; set `push_text = false` in c
 
 ## Running
 
-There's no start-at-logon yet; `phone up` starts everything.
+Nothing starts at logon. Start claude-phone when you want it: type `/claude-phone` in Claude Code (also
+`/claude-phone down`, `restart` or `status`), or run `phone up`. The services keep running after the Claude
+session that started them ends.
 
 ```powershell
 phone up               # FreeSWITCH, whisper-server and the daemon (each also: phone up daemon)
-phone status           # processes, daemon health, registered phones
+phone status           # processes, daemon health, and whether each phone is registered
 phone list             # live sessions and extensions
 phone type 301 "text"  # type into a session as a phone message would
 phone vm               # pending voicemail questions
@@ -175,10 +181,12 @@ and a fake VS Code bridge: no phone exchange, audio, whisper or VS Code needed. 
   FreeSWITCH's replies go astray. Set `sip_port = 5070`, run `phone restart freeswitch`, and use
   `<LAN address>:5070` as Linphone's domain.
 - **Phone won't register or calls fail:** FreeSWITCH's log is `~/.claude-phone/freeswitch/log/freeswitch.log`;
-  `phone status` lists the registered phones.
+  `phone status` shows whether each phone is registered. A desk phone also needs `scripts\firewall.ps1`
+  ([docs/t31p-setup.md](docs/t31p-setup.md)).
+- **Status bar says `off` while claude-phone runs:** set `claudePhone.daemonPort` in VS Code to your `daemon_port`.
 - **Wrong words for repo names:** whisper is prompted with live repo and branch names; check `phone list` spelling.
 
-[docs/build-notes.md](docs/build-notes.md) explains why the original was built the way it is (written for the Mac version).
+[docs/build-notes.md](docs/build-notes.md) explains why it's built the way it is, and what each piece needed on Windows.
 
 ## Credits
 

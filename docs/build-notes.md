@@ -1,55 +1,80 @@
 # Build notes
 
-What it took to get each piece working on an Apple Silicon Mac (macOS 27), and why. `scripts/build-asterisk.sh`
-and `asterisk/*.tmpl` already apply all of this; read it when something breaks.
+What it took to get each piece working on Windows 10 (VS Code, FreeSWITCH, Linphone), and why. The code already
+does all of this; read it when something breaks. The original macOS version (Asterisk, iTerm2) is upstream at
+[risingpower/claude-phone](https://github.com/risingpower/claude-phone).
 
-## 1. Asterisk: native build (no Homebrew formula; Docker not needed)
+## 1. FreeSWITCH instead of Asterisk
 
-Asterisk 22 LTS from https://downloads.asterisk.org, built against Homebrew's openssl@3. Each fix below was needed:
+Asterisk has no Windows build; the FreeSWITCH 1.11.x MSI runs natively.
 
-1. `./configure --with-jansson-bundled --with-pjproject-bundled PJPROJECT_CONFIGURE_OPTS="--with-ssl=$O" CPPFLAGS="-I$O/include" LDFLAGS="-L$O/lib"` with `O=/opt/homebrew/opt/openssl@3`.
-2. **makeopts:** configure appends a bare `--with-ssl`, which pjproject reads as prefix "yes" and builds
-   without TLS, so res_pjsip fails to load (`symbol not found: _pjsip_tls_transport_restart`).
-   Rewrite the `PJPROJECT_CONFIGURE_OPTS` line with the real openssl path.
-3. **main/Makefile:** upstream hard-codes `PJ_TARGET := aarch64-apple-darwin25.2.0`; it must match
-   `aarch64-apple-darwin$(uname -r)` (the names in `third-party/pjproject/source/pjlib/lib/`).
-4. **res/res_http_websocket.c:** macOS has no `TCP_KEEPIDLE`; define it as `TCP_KEEPALIVE`.
-5. **menuselect:** disable res_geolocation and res_pjsip_geolocation (GNU-ld-only trick) and app_voicemail;
-   enable res_mwi_external, res_mwi_external_ami and res_ari_mailboxes so ARI drives the message light.
-6. `make -k install`: pjproject's install step fails trying `mkdir /opt/pjproject`. Harmless: it is
-   statically linked into libasteriskpj.dylib.
-7. **Regenerate docs** after a full build (`rm doc/core-en_US.xml && make doc/core-en_US.xml`, copy into
-   `<astdatadir>/documentation/`). Without it Stasis fails to start ("Cannot update type
-   'declined_message_types'… no existing documentation").
-8. **astrundir must be a short path** (`/tmp/cphone`): macOS unix sockets are capped at 104 characters and
-   a long path gives a misleading "Address already in use" on asterisk.ctl.
-9. **RTP must be bound to IPv4** on every endpoint, or calls connect with no audio coming back
-   ("RTCP RR transmission error … Invalid argument": macOS rejects IPv4 sendto on the default socket).
-   Each endpoint gets `media_address=<Mac's IP>`, `bind_rtp_to_media_address=yes`, `rtp_ipv6=no`.
-10. If pjproject needs reconfiguring, `touch third-party/pjproject/Makefile.rules`.
+- **Our own config directory.** `phone up` starts `FreeSwitchConsole.exe -nonat -nonatmap` with `-conf`, `-log`,
+  `-db` and the other directories under `~/.claude-phone/freeswitch`, from `freeswitch/freeswitch.xml.tmpl`. So the
+  MSI's demo users (1000-1019, password 1234) are never exposed, which matters once a desk phone is on the LAN. If
+  the MSI installed a Windows service, set it to Manual.
+- **Call control over the event socket** (`claude_phone/esl.py`, 127.0.0.1:8021, `event json`). Every call to the
+  daemon's extensions is `park`ed by the dialplan and routed in Python on `CHANNEL_PARK`.
+- **Play only once the outgoing call is parked.** `CHANNEL_ANSWER` arrives before `originate … &park()` has finished;
+  anything played in between is cut off, so the question's first words were lost. Wait for `CHANNEL_PARK`.
+- **Read a recording only once FreeSWITCH has finished writing it.** The `record` app returns before the WAV header
+  is complete; reading it then gave "fmt chunk and/or data chunk missing". The daemon waits (up to 3 s) for a
+  complete WAV before transcribing.
+- **Registration state:** ask the SIP profile (`sofia_contact internal/<ext>@<lan_ip>`). `show registrations`
+  reads a table that survives FreeSWITCH restarts, so it lists phones that haven't re-registered yet.
+- **Message light:** `sendevent MESSAGE_WAITING` makes FreeSWITCH send an unsolicited `NOTIFY`. Linphone 6 ignores
+  it; a Yealink with MWI subscription off (its default) should show it.
 
-The first start after a build takes about 45 s while macOS scans the new libraries.
+## 2. Linphone on the same PC
 
-## 2. Typing into iTerm2: AppleScript
+- Linphone holds UDP 5060 and resets its own port setting on every start, so FreeSWITCH's replies to a
+  registration on 5060 reached FreeSWITCH itself and the registration timed out. `sip_port = 5070` fixes it, with
+  Linphone's domain set to `<lan_ip>:5070`.
+- Linphone 6 opens its incoming-call window out of sight, so calls look unanswerable. Its auto-answer setting
+  works around that for testing.
+- Linphone re-registers on its own timer, so after a FreeSWITCH restart it can take a while to show as registered.
 
-iTerm2's Python API isn't needed. Find the session by `unique id` (the part of `ITERM_SESSION_ID` after
-the colon), `write text txt newline no`, wait 0.3 s, then send a carriage return. An idle Claude Code
-session submits at once; a busy one queues the text until its turn ends. Answers are typed rather than
-sent over Claude Code's cross-session messaging because they must arrive as genuine user turns.
+## 3. Typing into sessions: a VS Code extension
 
-## 3. Session identity
+`vscode-extension/` runs a small HTTP server per VS Code window on 127.0.0.1 (random port, random token, no
+`Origin` header allowed) and leaves `~/.claude-phone/bridges/<window>.json` for the daemon.
+`Terminal.sendText(text, false)`, a 0.3 s wait, then `sendText("\r", false)`: Claude Code treats a trailing
+newline sent with the text as part of a paste, so Enter has to go separately. It types into unfocused tabs, and
+an idle Claude Code session submits at once; a busy one queues the text until its turn ends. Answers are typed
+rather than sent over Claude Code's cross-session messaging because they must arrive as genuine user turns.
 
-Hooks inherit the terminal's environment, so `ITERM_SESSION_ID` is visible to them. A stdio MCP server
-receives `CLAUDE_CODE_SESSION_ID`, `ITERM_SESSION_ID` and `CLAUDE_PROJECT_DIR`, which is how a tool call
-is tied to its tab. Tool calls carry no subagent id, hence the optional `from_agent` input.
-The SessionEnd hook has a 1.5 s default timeout, so it is a single SQLite delete.
+The Claude Code chat panel can't be reached this way: its extension only pre-fills a prompt from outside
+(`claude-vscode.editor.open(session, prompt)`) and never submits it. Channels (an MCP server pushing into a
+session) would work, but custom ones need `--dangerously-load-development-channels`, which Claude Code ignores
+through the Agent SDK that the chat panel runs on. Hence `claudeCode.useTerminal`.
 
-## 4. Timeouts
+## 4. Session identity
+
+The process chain is `claude.exe` → the terminal's shell (`Terminal.processId`) → VS Code's pty host. Hooks and the
+MCP server are descendants of `claude`, so `inject.terminal_id()` walks up their parent processes (psutil) and asks
+the bridges which ancestor is a terminal's shell: `vscode:<shell pid>`. It stays the same across `/clear` and
+restarting `claude` in the tab. The MCP server also gets `CLAUDE_CODE_SESSION_ID` and `CLAUDE_PROJECT_DIR`. Tool
+calls carry no subagent id, hence the optional `from_agent` input. The SessionEnd hook has a 1.5 s default
+timeout, so it is a single SQLite delete.
+
+Esc skips the Stop hook, so a Notification hook on `idle_prompt` (about 60 s after Claude stops) marks the session
+idle again.
+
+## 5. Timeouts
 
 Claude Code moves MCP calls that run longer than 120 s to the background
-(`CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS`). The budget is ring 25 s + answer 60 s + transcription under 1 s.
+(`CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS`). The budget is ring 25 s + answer 60 s + transcription about 2 s.
 
-## 5. Yealink T31P
+## 6. Windows details
+
+- `os.kill(pid, 0)` **terminates** a process on Windows rather than checking it; `cli.py` uses psutil.
+- Services start with `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`, and outlive the shell (or Claude Code tool
+  call) that started them.
+- A log file that's still open can't be renamed, so rotation copies and truncates.
+- Windows error messages come in the system language (æøå), which the console's code page may not cover; the CLI
+  prints them with replacement characters rather than crashing.
+- Secrets live in Windows Credential Manager through `keyring` (service `claude-phone`).
+
+## 7. Yealink T31P
 
 - Remote phonebook XML: `<YealinkIPPhoneDirectory><DirectoryEntry><Name/><Telephone/></DirectoryEntry>`.
 - Distinctive rings: `Alert-Info: <http://127.0.0.1>;info=Ring3`.
@@ -57,9 +82,12 @@ Claude Code moves MCP calls that run longer than 120 s to the background
 - Do Not Disturb rejects with 480; 480/486/603 are treated as "not answered".
 - The screen shows 17 characters of caller ID before scrolling.
 
-## 6. Speech
+## 8. Speech
 
-- **whisper.cpp** (`brew install whisper-cpp`): whisper-server keeps the model loaded. Live repo and branch
-  names are passed as the prompt, or names like "lemon stand" come back as near-misses.
-  large-v3-turbo matched or beat base.en on every real clip at about 0.3 s each; 8 kHz phone audio is fine.
-- **Text to speech:** macOS `say` works out of the box (UK voices: Daniel, Shelley, Fiona…); ElevenLabs is optional.
+- **whisper.cpp:** whisper-server keeps the model loaded. Live repo and branch names are passed as the prompt, or
+  names like "lemon stand" come back as near-misses. 8 kHz phone audio is fine. On a 6-core CPU without a GPU
+  (Ryzen 5 5500, `whisper-blas-bin-x64`): `small.en-q5_1` takes ~1.8 s per answer, `large-v3-turbo` ~8.4 s and
+  `base.en` ~0.55 s, so `small.en` is the default.
+- **Text to speech:** the Windows voices through System.Speech, rendered straight to 16 kHz mono WAV; the text is
+  passed outside the PowerShell script, never spliced into it. ElevenLabs is optional and falls back to Windows
+  speech if it fails.
