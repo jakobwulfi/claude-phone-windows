@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -109,83 +108,23 @@ def py_argv(*args: str) -> list[str]:
     return [sys.executable, "-m", "claude_phone", *args]
 
 
+def whisper_server(s: config.Settings) -> str:
+    exe = s.whisper_server or shutil.which("whisper-server")
+    if not exe:
+        sys.exit("whisper-server not found: put its folder on PATH, or set whisper_server in "
+                 f"{config.CONFIG_FILE} to the full path of whisper-server.exe")
+    return exe
+
+
+# Physical cores: whisper gains nothing from hyperthreads.
+WHISPER_THREADS = psutil.cpu_count(logical=False) or 4
+
 SERVICES = {
     "asterisk": lambda s: asterisk_cmd("-f", "-n"),
-    "whisper": lambda s: [shutil.which("whisper-server") or "/opt/homebrew/bin/whisper-server", "-m", str(model_path()), "--host", "127.0.0.1",
-                          "--port", str(s.whisper_port), "-t", "4", "--no-timestamps", "-l", "en"],
+    "whisper": lambda s: [whisper_server(s), "-m", str(model_path()), "--host", "127.0.0.1", "--port", str(s.whisper_port),
+                          "-t", str(WHISPER_THREADS), "--no-timestamps", "-l", s.whisper_language],
     "daemon": lambda s: py_argv("daemon"),
 }
-
-
-# --- launchd (user agents; no sudo) ---
-
-AGENTS = Path.home() / "Library" / "LaunchAgents"
-
-
-def _label(name: str) -> str:
-    return f"com.claude-phone.{name}"
-
-
-def _plist(name: str) -> Path:
-    return AGENTS / f"{_label(name)}.plist"
-
-
-def _launchd(name: str) -> bool:
-    return _plist(name).exists()
-
-
-def _launchctl(*args: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["launchctl", *args], capture_output=True, text=True)
-
-
-def _domain() -> str:
-    return f"gui/{os.getuid()}"
-
-
-def _agent_pid(name: str) -> int | None:
-    r = _launchctl("print", f"{_domain()}/{_label(name)}")
-    for line in r.stdout.splitlines():
-        line = line.strip()
-        if line.startswith("pid = "):
-            return int(line.split("=")[1])
-    return None
-
-
-def write_plist(name: str, argv: list[str]) -> None:
-    import plistlib
-    AGENTS.mkdir(parents=True, exist_ok=True)
-    out = str(config.LOGS / f"{name}.out")
-    plistlib.dump({
-        "Label": _label(name),
-        "ProgramArguments": argv,
-        "RunAtLoad": True,
-        "KeepAlive": True,
-        "ThrottleInterval": 5,
-        "StandardOutPath": out,
-        "StandardErrorPath": out,
-        "WorkingDirectory": str(config.HOME),
-        "EnvironmentVariables": {"PATH": "/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"},
-    }, open(_plist(name), "wb"))
-
-
-def cmd_install_services(a) -> None:
-    config.ensure_dirs()
-    s = config.load()
-    render_asterisk_config()
-    ensure_model()
-    for n in SERVICES:
-        _stop(n)  # anything started by hand
-        _launchctl("bootout", f"{_domain()}/{_label(n)}")
-        write_plist(n, SERVICES[n](s))
-        r = _launchctl("bootstrap", _domain(), str(_plist(n)))
-        print(f"{n}: {'installed' if r.returncode == 0 else 'FAILED ' + r.stderr.strip()}")
-
-
-def cmd_uninstall_services(a) -> None:
-    for n in SERVICES:
-        _launchctl("bootout", f"{_domain()}/{_label(n)}")
-        _plist(n).unlink(missing_ok=True)
-        print(f"{n}: removed")
 
 
 def cmd_up(a) -> None:
@@ -195,10 +134,6 @@ def cmd_up(a) -> None:
     ensure_model()
     names = [a.only] if a.only else list(SERVICES)
     for n in names:
-        if _launchd(n):
-            r = _launchctl("bootstrap", _domain(), str(_plist(n)))
-            print(f"{n}: {'started' if r.returncode == 0 else 'already loaded'} (launchd)")
-            continue
         _spawn(n, SERVICES[n](s))
         if n == "asterisk":
             time.sleep(3)
@@ -209,21 +144,10 @@ def cmd_up(a) -> None:
 def cmd_down(a) -> None:
     names = [a.only] if a.only else list(reversed(list(SERVICES)))
     for n in names:
-        if _launchd(n):
-            _launchctl("bootout", f"{_domain()}/{_label(n)}")
-            print(f"{n}: stopped (launchd; `phone up` to start)")
-            continue
         _stop(n)
 
 
 def cmd_restart(a) -> None:
-    names = [a.only] if a.only else list(SERVICES)
-    if all(_launchd(n) for n in names):
-        render_asterisk_config()
-        for n in names:
-            r = _launchctl("kickstart", "-k", f"{_domain()}/{_label(n)}")
-            print(f"{n}: {'restarted' if r.returncode == 0 else 'FAILED ' + r.stderr.strip()}")
-        return
     cmd_down(a)
     cmd_up(a)
 
@@ -233,15 +157,14 @@ def cmd_status(a) -> None:
     if w:
         print("WARNING:", w)
     for n in SERVICES:
-        pid = _agent_pid(n) if _launchd(n) else _pid(n)
-        how = " (launchd)" if _launchd(n) else ""
-        print(f"{n:9} {'running pid ' + str(pid) if pid else 'stopped'}{how}")
+        pid = _pid(n)
+        print(f"{n:9} {'running pid ' + str(pid) if pid else 'stopped'}")
     try:
         with urllib.request.urlopen(f"{config.load().daemon_url}/health", timeout=3) as r:
             print("health   ", json.loads(r.read()))
     except Exception as e:
         print("health    unavailable:", e)
-    if _pid("asterisk") or _agent_pid("asterisk"):
+    if _pid("asterisk"):
         print(asterisk_rx("pjsip show contacts").strip())
 
 
@@ -320,7 +243,7 @@ def cmd_meetings(a) -> None:
     from . import diary
     s = config.load()
     if not diary.access():
-        print("No calendar access: System Settings → Privacy & Security → Calendars.")
+        print("Meeting alerts have no calendar source on Windows yet.")
         return
     print("calendars:", ", ".join(diary.calendars()))
     print("used:", ", ".join(s.meeting_calendars) or "all")
@@ -335,6 +258,12 @@ def cmd_say(a) -> None:
     print(tts.render(a.text))
 
 
+def cmd_voices(a) -> None:
+    from . import tts
+    for line in tts.sapi_voices():
+        print(line)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(prog="phone")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -343,8 +272,6 @@ def main() -> None:
         sp.add_argument("only", nargs="?", choices=list(SERVICES))
         sp.set_defaults(fn=fn)
     sub.add_parser("status").set_defaults(fn=cmd_status)
-    sub.add_parser("install-services", help="run everything under launchd").set_defaults(fn=cmd_install_services)
-    sub.add_parser("uninstall-services").set_defaults(fn=cmd_uninstall_services)
     sub.add_parser("list").set_defaults(fn=cmd_list)
     sub.add_parser("vm", help="pending voicemail questions").set_defaults(fn=cmd_vm)
     sp = sub.add_parser("type", help="type text into a session, as a phone message would be")
@@ -369,6 +296,7 @@ def main() -> None:
     sp = sub.add_parser("say", help="render text to speech, print the media URI")
     sp.add_argument("text")
     sp.set_defaults(fn=cmd_say)
+    sub.add_parser("voices", help="list the installed Windows voices").set_defaults(fn=cmd_voices)
     sub.add_parser("meeting-test", help="preview a meeting alert (whisper and screen)").set_defaults(fn=cmd_meeting_test)
     sub.add_parser("meetings", help="upcoming meetings the alerts will use").set_defaults(fn=cmd_meetings)
     sub.add_parser("config", help="regenerate Asterisk config").set_defaults(fn=lambda a: render_asterisk_config())

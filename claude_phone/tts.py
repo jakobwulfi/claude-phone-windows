@@ -6,8 +6,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
+import shutil
 import subprocess
-import tempfile
 import urllib.request
 from pathlib import Path
 
@@ -22,19 +23,60 @@ class Provider:
 
 
 def _to_wav16(src: Path, dst: Path) -> None:
-    subprocess.run(["afconvert", "-f", "WAVE", "-d", "LEI16@16000", "-c", "1", str(src), str(dst)],
-                   check=True, capture_output=True)
+    """Any audio file to 16 kHz mono 16-bit WAV. dst may carry a non-.wav suffix, so the format is named."""
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg not found: winget install Gyan.FFmpeg, then open a new terminal")
+    subprocess.run([ffmpeg, "-nostdin", "-loglevel", "error", "-y", "-i", str(src),
+                    "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-f", "wav", str(dst)],
+                   check=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
 
 
-class Say(Provider):
-    name = "say"
+SAPI_TIMEOUT_S = 60
+# Text, voice and output path arrive as environment variables, so nothing in them is parsed as PowerShell.
+_SAPI_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Speech
+$s = New-Object System.Speech.Synthesis.SpeechSynthesizer
+try {
+  # A voice that isn't installed keeps the default voice rather than leaving a call silent.
+  $installed = $s.GetInstalledVoices() | Where-Object { $_.Enabled -and $_.VoiceInfo.Name -eq $env:CP_VOICE }
+  if ($env:CP_VOICE -and $installed) { $s.SelectVoice($env:CP_VOICE) }
+  $fmt = New-Object System.Speech.AudioFormat.SpeechAudioFormatInfo(16000,
+    [System.Speech.AudioFormat.AudioBitsPerSample]::Sixteen, [System.Speech.AudioFormat.AudioChannel]::Mono)
+  $s.SetOutputToWaveFile($env:CP_OUT, $fmt)
+  $s.Speak($env:CP_TEXT)
+} finally { $s.Dispose() }
+"""
+_SAPI_VOICES = r"""
+Add-Type -AssemblyName System.Speech
+$s = New-Object System.Speech.Synthesis.SpeechSynthesizer
+$s.GetInstalledVoices() | Where-Object { $_.Enabled } | ForEach-Object { $_.VoiceInfo.Name + "`t" + $_.VoiceInfo.Culture }
+$s.Dispose()
+"""
+
+
+def _powershell(script: str, env: dict[str, str] | None = None) -> str:
+    r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                       env={**os.environ, **(env or {})}, capture_output=True, text=True, timeout=SAPI_TIMEOUT_S,
+                       creationflags=subprocess.CREATE_NO_WINDOW)
+    if r.returncode != 0:
+        raise RuntimeError(f"Windows speech failed: {r.stderr.strip()[:300]}")
+    return r.stdout
+
+
+class Sapi(Provider):
+    """Windows' built-in voices (System.Speech), written straight to 16 kHz mono 16-bit WAV."""
+    name = "sapi"
 
     def render(self, text: str, voice: str | None, out_wav: Path) -> None:
-        voice = voice or config.load().say_voice
-        with tempfile.TemporaryDirectory() as td:
-            aiff = Path(td) / "t.aiff"
-            subprocess.run(["say", "-v", voice, "-o", str(aiff), text], check=True, capture_output=True)
-            _to_wav16(aiff, out_wav)
+        voice = voice or config.load().sapi_voice
+        _powershell(_SAPI_SCRIPT, {"CP_TEXT": text, "CP_VOICE": voice or "", "CP_OUT": str(out_wav)})
+
+
+def sapi_voices() -> list[str]:
+    """Installed Windows voices, as 'name<TAB>culture' lines, for `phone voices`."""
+    return [line for line in _powershell(_SAPI_VOICES).splitlines() if line.strip()]
 
 
 class ElevenLabs(Provider):
@@ -72,7 +114,7 @@ def _write_wav(path: Path, pcm: bytes, rate: int) -> None:
         w.writeframes(pcm)
 
 
-PROVIDERS: dict[str, Provider] = {p.name: p for p in (Say(), ElevenLabs(), ElevenLabsV3())}
+PROVIDERS: dict[str, Provider] = {p.name: p for p in (Sapi(), ElevenLabs(), ElevenLabsV3())}
 
 
 def voice_for(repo: str | None) -> tuple[str, str | None]:
@@ -87,7 +129,7 @@ def render(text: str, repo: str | None = None, voice: tuple[str, str | None] | N
     provider, voice = voice or voice_for(repo)
     if not voice:  # name the default voice in the cache key, so changing it in config isn't masked by old speech
         s = config.load()
-        voice = s.say_voice if provider == "say" else s.elevenlabs_voice_id
+        voice = s.sapi_voice if provider == "sapi" else s.elevenlabs_voice_id
     key = hashlib.sha256(json.dumps([provider, voice, text]).encode()).hexdigest()[:20]
     base = config.SOUNDS / "tts" / key
     out = base.with_suffix(".wav16")
@@ -99,9 +141,9 @@ def render(text: str, repo: str | None = None, voice: tuple[str, str | None] | N
         try:
             PROVIDERS[provider].render(text, voice, tmp)
         except Exception:
-            if provider == "say":
+            if provider == "sapi":
                 raise
-            PROVIDERS["say"].render(text, None, tmp)  # never leave a call silent
+            PROVIDERS["sapi"].render(text, None, tmp)  # never leave a call silent
         tmp.replace(out)
     return f"sound:{base}"
 
@@ -173,7 +215,7 @@ def phrase(key: str, repo: str | None = None, **kw) -> str:
 
 
 def spoken_label(label: str) -> str:
-    """'lemon-stand/feat/ags-2' -> 'lemon stand, feat ags 2' so say/ElevenLabs read it naturally."""
+    """'lemon-stand/feat/ags-2' -> 'lemon stand, feat ags 2' so the voices read it naturally."""
     repo, _, branch = label.partition("/")
     clean = lambda x: " ".join(x.replace("-", " ").replace("_", " ").replace("/", " ").split())
     return f"{clean(repo)}, {clean(branch)}" if branch else clean(repo)

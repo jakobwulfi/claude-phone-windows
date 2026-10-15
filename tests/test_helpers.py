@@ -65,9 +65,25 @@ def test_lan_cidr_follows_detected_ip(monkeypatch):
 def test_changing_the_default_voice_renders_new_speech(monkeypatch):
     from claude_phone import config
     rendered = []
-    monkeypatch.setattr(tts.PROVIDERS["say"], "render", lambda text, voice, out: (rendered.append(voice), out.write_bytes(b"")))
-    monkeypatch.setattr(config, "load", lambda: Settings(say_voice="Daniel"))
+    monkeypatch.setattr(tts.PROVIDERS["sapi"], "render", lambda text, voice, out: (rendered.append(voice), out.write_bytes(b"")))
+    monkeypatch.setattr(config, "load", lambda: Settings(sapi_voice="Microsoft David Desktop"))
     a = tts.render("Hello there.")
-    monkeypatch.setattr(config, "load", lambda: Settings(say_voice="Fiona"))
+    monkeypatch.setattr(config, "load", lambda: Settings(sapi_voice="Microsoft Zira Desktop"))
     b = tts.render("Hello there.")
-    assert a != b and rendered == ["Daniel", "Fiona"]
+    assert a != b and rendered == ["Microsoft David Desktop", "Microsoft Zira Desktop"]
+
+
+def test_windows_speech_gets_the_text_outside_the_script(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(tts.subprocess, "run", lambda argv, **kw: calls.append((argv, kw)) or
+                        tts.subprocess.CompletedProcess(argv, 0, "", ""))
+    text = "It's $(Remove-Item x) \"quoted\""
+    tts.PROVIDERS["sapi"].render(text, "Microsoft Zira Desktop", tmp_path / "out.wav")
+    (argv, kw), = calls
+    assert text not in " ".join(argv)
+    assert kw["env"]["CP_TEXT"] == text and kw["env"]["CP_VOICE"] == "Microsoft Zira Desktop"
+
+
+def test_lan_addresses_leave_out_loopback():
+    from claude_phone import config
+    assert not any(ip.startswith("127.") for ip in config.current_lan_ips())

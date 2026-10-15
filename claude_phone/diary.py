@@ -1,16 +1,10 @@
-"""Meetings from the Mac's Calendar app (EventKit), so any account synced there works: Google, iCloud,
-Exchange. Read-only. The first read asks macOS for calendar access for the process that runs the daemon."""
+"""Meetings for the meeting alerts. There's no calendar source on Windows yet (an ICS feed from Google or
+Outlook is planned), so no meetings are found and the alerts stay quiet even when meeting_alerts is on."""
 
 from __future__ import annotations
 
-import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-
-from . import log
-
-lg = log.get("diary")
-_store = None
 
 
 @dataclass(frozen=True)
@@ -23,68 +17,17 @@ class Meeting:
 
 
 def access() -> bool:
-    """True once macOS has granted calendar access; asks (and waits up to a minute) the first time."""
-    global _store
-    import EventKit
-    if _store is None:
-        _store = EventKit.EKEventStore.alloc().init()
-    status = EventKit.EKEventStore.authorizationStatusForEntityType_(EventKit.EKEntityTypeEvent)
-    if status in (EventKit.EKAuthorizationStatusAuthorized, getattr(EventKit, "EKAuthorizationStatusFullAccess", 3)):
-        return True
-    if status != EventKit.EKAuthorizationStatusNotDetermined:
-        return False
-    done, result = threading.Event(), []
-
-    def cb(granted, err):
-        result.append(bool(granted))
-        done.set()
-    if hasattr(_store, "requestFullAccessToEventsWithCompletion_"):
-        _store.requestFullAccessToEventsWithCompletion_(cb)
-    else:
-        _store.requestAccessToEntityType_completion_(EventKit.EKEntityTypeEvent, cb)
-    done.wait(60)
-    if result and result[0]:
-        _store = EventKit.EKEventStore.alloc().init()  # a store made before the grant sees no calendars
-        return True
+    """True once a calendar source is available. None is yet."""
     return False
 
 
 def calendars() -> list[str]:
-    import EventKit
-    return [c.title() for c in _store.calendarsForEntityType_(EventKit.EKEntityTypeEvent)] if access() else []
-
-
-def _dt(ns) -> datetime:
-    return datetime.fromtimestamp(ns.timeIntervalSince1970()).astimezone()
+    return []
 
 
 def meetings(start: datetime, end: datetime, only: list[str] | None = None) -> list[Meeting]:
     """Timed events overlapping start..end, minus all-day, cancelled and declined ones, by start time."""
-    import EventKit
-    from Foundation import NSDate
-    if not access():
-        return []
-    cals = [c for c in _store.calendarsForEntityType_(EventKit.EKEntityTypeEvent) if not only or c.title() in only]
-    if not cals:
-        return []
-    pred = _store.predicateForEventsWithStartDate_endDate_calendars_(
-        NSDate.dateWithTimeIntervalSince1970_(start.timestamp()), NSDate.dateWithTimeIntervalSince1970_(end.timestamp()), cals)
-    out = []
-    for e in _store.eventsMatchingPredicate_(pred) or []:
-        if e.isAllDay() or e.status() == EventKit.EKEventStatusCanceled:
-            continue
-        people, declined = [], False
-        for a in e.attendees() or []:
-            if a.isCurrentUser():
-                declined = a.participantStatus() == EventKit.EKParticipantStatusDeclined
-            elif a.participantType() == EventKit.EKParticipantTypePerson and a.name():
-                people.append(str(a.name()))
-        if declined:
-            continue
-        s = _dt(e.startDate())
-        out.append(Meeting(f"{e.eventIdentifier()}@{s.isoformat()}", str(e.title() or "Meeting"), s, _dt(e.endDate()),
-                           tuple(people)))
-    return sorted(out, key=lambda m: m.start)
+    return []
 
 
 def summary(m: Meeting) -> tuple[str, str]:

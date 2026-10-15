@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
+import socket
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+
+import psutil
 
 HOME = Path(os.environ.get("CLAUDE_PHONE_HOME", Path.home() / ".claude-phone"))
 REPO = Path(__file__).resolve().parent.parent
@@ -32,7 +34,7 @@ CONFIG_FILE = HOME / "config.toml"
 class Settings:
     # Who the phone is for. Spoken and typed as this name; the MCP tools become call_<name> and notify_<name>.
     owner_name: str = "the user"
-    # Empty: this Mac's address on its default route, and that /24. Pin both once the Mac has a DHCP reservation.
+    # Empty: this PC's address on its default route, and that /24. Pin both once the PC has a DHCP reservation.
     lan_ip: str = ""
     lan_cidr: str = ""
     desk_ext: str = "200"
@@ -42,31 +44,34 @@ class Settings:
     voicemail_ext: str = "500"
     allhands_ext: str = "9"
     operator_ext: str = "0"
-    operator_provider: str = "say"
-    operator_voice: str = "Shelley (English (UK))"
+    operator_provider: str = "sapi"
+    operator_voice: str = "Microsoft Zira Desktop"  # `phone voices` lists the installed Windows voices
     first_session_ext: int = 301  # not 1xx: UK 101 is the police, 111 the NHS
     last_session_ext: int = 399
     ari_port: int = 8088
     daemon_port: int = 8765
     whisper_port: int = 8910
     whisper_model: str = "ggml-large-v3-turbo-q5_0.bin"  # vs base.en on 23 real clips: same or better, 0.3 s each
+    # Empty: whisper-server on PATH. Else the full path to whisper-server.exe.
+    whisper_server: str = ""
+    whisper_language: str = "en"  # "da", "auto", ...: needs a multilingual model (no ".en" in its name)
     ring_seconds: int = 25
     record_seconds: int = 60
     callerid_max: int = 17  # T31P shows 17 chars before scrolling (tested 2026-10-09)
-    tts_provider: str = "say"
-    say_voice: str = "Daniel"
+    tts_provider: str = "sapi"
+    sapi_voice: str = ""  # empty: the Windows default voice
     # Yealink Push XML: summaries of calls and meetings on the desk phone's screen. The phone must list lan_ip
     # as its Push XML Server. desk_ip: empty means the address the phone registered from.
     screen_push: bool = False
     desk_ip: str = ""
-    # Meetings from the Mac's Calendar app: a whisper and a screen warn_minutes before each one, and Claude's
-    # calls are held (voicemail, no pushes) from then until it ends. Empty meeting_calendars: every calendar.
+    # Meeting alerts: a whisper and a screen warn_minutes before each meeting, and Claude's calls are held
+    # (voicemail, no pushes) from then until it ends. No calendar source on Windows yet, so they stay quiet.
     meeting_alerts: bool = False
     meeting_warn_minutes: int = 2
     meeting_calendars: list = field(default_factory=list)
     # The meeting whisper, played on the speaker without ringing. "elevenlabs_v3" acts out tags like "[whispers]".
-    whisper_provider: str = "say"
-    whisper_voice: str = "Whisper"
+    whisper_provider: str = "sapi"
+    whisper_voice: str = ""
     whisper_text: str = "Pssst. You have a meeting."
     elevenlabs_voice_id: str = "JBFqnCBsd6RMkjVDRZzb"
     elevenlabs_model: str = "eleven_turbo_v2_5"
@@ -126,30 +131,31 @@ def bound_ip() -> str | None:
 
 
 def detect_lan_ip() -> str | None:
-    """IPv4 address of the interface on this Mac's default route."""
+    """IPv4 address of the interface on this PC's default route. Connecting a UDP socket sends nothing;
+    it only makes Windows pick the outgoing interface."""
     try:
-        route = subprocess.run(["route", "-n", "get", "default"], capture_output=True, text=True, timeout=5).stdout
-        iface = next(line.split(":", 1)[1].strip() for line in route.splitlines() if "interface:" in line)
-        ip = subprocess.run(["ipconfig", "getifaddr", iface], capture_output=True, text=True, timeout=5).stdout.strip()
-        return ip or None
-    except (StopIteration, OSError, subprocess.SubprocessError):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 9))  # TEST-NET-1: never routed anywhere real
+            ip = s.getsockname()[0]
+    except OSError:
         return None
+    return None if ip.startswith(("0.", "127.")) else ip
 
 
 def current_lan_ips() -> set[str]:
-    """IPv4 addresses on this Mac, to spot the Wi-Fi address drifting away from lan_ip."""
-    out = subprocess.run(["ifconfig"], capture_output=True, text=True).stdout
-    return {line.split()[1] for line in out.splitlines() if line.strip().startswith("inet ") and "127.0.0.1" not in line}
+    """IPv4 addresses on this PC, to spot the Wi-Fi address drifting away from lan_ip."""
+    return {a.address for addrs in psutil.net_if_addrs().values() for a in addrs
+            if a.family == socket.AF_INET and not a.address.startswith("127.")}
 
 
 def ip_warning() -> str | None:
     s = load()
     ip = bound_ip() or s.lan_ip
     if not ip:
-        return "This Mac has no network address, so the desk phone can't be reached."
+        return "This PC has no network address, so the desk phone can't be reached."
     if ip in current_lan_ips():
         return None
-    return (f"This Mac doesn't have {ip}, so the desk phone can't be reached: calls go to voicemail "
+    return (f"This PC doesn't have {ip}, so the desk phone can't be reached: calls go to voicemail "
             f"and missed-call pushes. Away from home, that's expected. If the home address changed for good, set "
             f"lan_ip in {CONFIG_FILE}, run `phone restart asterisk`, and update the SIP server on the phones.")
 

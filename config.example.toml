@@ -1,33 +1,32 @@
-# Copy to ~/.claude-phone/config.toml. Every key is optional.
+# Copy to %USERPROFILE%\.claude-phone\config.toml. Every key is optional.
 owner_name = "Sam"      # spoken and typed as "Sam"; the tools become call_sam and notify_sam
-# lan_ip = "192.168.1.50"     # default: this Mac's address. Pin it once the router reserves it
+# lan_ip = "192.168.1.50"     # default: this PC's address. Pin it once the router reserves it
 # lan_cidr = "192.168.1.0/24" # default: lan_ip's /24. Only phones in this range may register
-desk_ext = "200"        # T31P
+desk_ext = "200"        # desk phone
 softphone_ext = "201"   # Linphone
 ring_ext = "200"        # what call_<name> rings; "201" while testing on Linphone
 voicemail_ext = "500"
 ring_seconds = 25       # keep ring + record + transcribe under Claude Code's 120 s auto-background
 record_seconds = 60
 callerid_max = 18
-tts_provider = "say"    # or "elevenlabs" (ELEVENLABS_API_KEY or keychain claude-phone/elevenlabs)
-say_voice = "Daniel"
-operator_provider = "say"  # dial 0; "elevenlabs" with an ElevenLabs voice id below
-operator_voice = "Shelley (English (UK))"
+tts_provider = "sapi"   # Windows voices, or "elevenlabs" (ELEVENLABS_API_KEY or Credential Manager claude-phone/elevenlabs)
+sapi_voice = ""         # empty: the Windows default voice. `phone voices` lists the installed ones
+operator_provider = "sapi"  # dial 0; "elevenlabs" with an ElevenLabs voice id below
+operator_voice = "Microsoft Zira Desktop"
+
+# Speech to text
+# whisper_server = 'C:\tools\whisper\Release\whisper-server.exe'  # default: whisper-server on PATH
+# whisper_model = "ggml-large-v3-turbo-q5_0.bin"  # smaller and faster on a slow CPU: "ggml-base.en.bin"
+# whisper_language = "en"     # other languages need a multilingual model (no ".en" in its name)
 
 # Per-repo voices
 # [repo_voices.lemon-stand]
-# provider = "say"
-# voice = "Fiona (Enhanced)"
+# provider = "sapi"
+# voice = "Microsoft David Desktop"
 
-# Per-repo ringtones (T31P Ring1-8). Unlisted repos get the least-used ring on first sight.
+# Per-repo ringtones (Yealink Ring1-8). Unlisted repos get the least-used ring on first sight.
 # [repo_ringtones]
 # lemon-stand = 3
 
-# Call summaries on the phone's screen (docs/t31p-setup.md step 11)
+# Call summaries on a Yealink desk phone's screen (docs/t31p-setup.md step 11)
 # screen_push = true
-# Meeting alerts from the Mac's Calendar app: whisper + screen 2 minutes before, calls held until it ends
-# meeting_alerts = true
-# meeting_warn_minutes = 2
-# meeting_calendars = ["Work"]   # default: every calendar (`phone meetings` lists them)
-# whisper_provider = "say"       # or "elevenlabs_v3" with whisper_text = "[whispers] Pssst... you have a meeting."
-# whisper_voice = "Whisper"
