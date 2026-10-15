@@ -174,10 +174,15 @@ def cmd_status(a) -> None:
     except Exception as e:
         print("health    unavailable:", e)
     if _pid("freeswitch"):
-        try:
-            print(freeswitch_api("show registrations").strip())
-        except Exception as e:
-            print("registrations unavailable:", e)
+        # Ask the SIP profile: `show registrations` reads a table that survives FreeSWITCH restarts.
+        s = config.load()
+        for ext in dict.fromkeys((s.ring_ext, s.desk_ext, s.softphone_ext)):
+            try:
+                contact = freeswitch_api(f"sofia_contact internal/{ext}@{s.lan_ip}").strip()
+            except Exception as e:
+                contact = f"unavailable: {e}"
+            state = "not registered" if contact.startswith("error/") else contact
+            print(f"phone {ext:4} {state}{'  (rings)' if ext == s.ring_ext else ''}")
 
 
 def cmd_list(a) -> None:
