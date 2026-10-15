@@ -67,8 +67,9 @@ Claude Code moves MCP calls that run longer than 120 s to the background
 ## 6. Windows details
 
 - `os.kill(pid, 0)` **terminates** a process on Windows rather than checking it; `cli.py` uses psutil.
-- Services start with `DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP`, and outlive the shell (or Claude Code tool
-  call) that started them.
+- Services start with `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP` and outlive the shell (or Claude Code session)
+  that started them. Not `DETACHED_PROCESS`: the venv's `python.exe` is a launcher, and the real interpreter it
+  starts would then open a console window of its own, where closing it stops the daemon.
 - A log file that's still open can't be renamed, so rotation copies and truncates.
 - Windows error messages come in the system language (æøå), which the console's code page may not cover; the CLI
   prints them with replacement characters rather than crashing.

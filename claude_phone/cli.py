@@ -18,7 +18,9 @@ from . import config, keychain, registry
 
 RUN = config.HOME / "run"
 # Services outlive the console that ran `phone up`.
-DETACHED = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+# A hidden console, not none (DETACHED_PROCESS): the venv's python.exe is a launcher, and the real interpreter it
+# starts would open a console window of its own, where closing it kills the daemon.
+DETACHED = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
 STOP_TIMEOUT_S = 5
 MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{}"
 
