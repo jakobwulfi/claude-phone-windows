@@ -277,6 +277,9 @@ def cmd_voices(a) -> None:
 
 
 def main() -> None:
+    # Windows error messages come in the system language (æøå), which a console's code page may not cover.
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(errors="replace")
     p = argparse.ArgumentParser(prog="phone")
     sub = p.add_subparsers(dest="cmd", required=True)
     for name, fn in (("up", cmd_up), ("down", cmd_down), ("restart", cmd_restart)):

@@ -6,4 +6,6 @@ vscode-extension/out/
 *.vsix
 *.stackdump
 .claude/settings.local.json
+# Plans stay local: they're working notes, not documentation.
 docs/windows-port.md
+docs/plans/

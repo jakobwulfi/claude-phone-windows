@@ -6,9 +6,12 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { startBridgeServer, TerminalHost, TerminalInfo } from './server';
+import { entries, fetchSessions, healthLine, SessionEntry, SessionList, statusText, statusTooltip } from './sessions';
 
 // Text, then Enter separately: Claude Code treats a pasted trailing newline as part of the text.
 const SUBMIT_DELAY_MS = 300;
+const REFRESH_MS = 15_000;
+const DEFAULT_DAEMON_PORT = 8765;
 
 function bridgesDir(): string {
   const home = process.env.CLAUDE_PHONE_HOME || path.join(os.homedir(), '.claude-phone');
@@ -36,6 +39,13 @@ class VsCodeTerminals implements TerminalHost {
     await delay(SUBMIT_DELAY_MS);
     terminal.sendText('\r', false);
     return true;
+  }
+
+  /** Brings the terminal forward. False when it isn't in this window. */
+  async show(pid: number): Promise<boolean> {
+    const terminal = await this.find(pid);
+    terminal?.show();
+    return terminal !== undefined;
   }
 
   private async find(pid: number): Promise<vscode.Terminal | undefined> {
@@ -69,18 +79,63 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   }
 
   const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 0);
-  status.text = '$(call-outgoing) phone';
-  status.tooltip = "claude-phone can type into this window's terminals. Click to list them.";
-  status.command = 'claudePhone.showTerminals';
+  status.command = 'claudePhone.showSessions';
   status.show();
 
-  const showTerminals = vscode.commands.registerCommand('claudePhone.showTerminals', async () => {
-    const list = await terminals.list();
-    const summary = list.map((t) => `${t.name} (pid ${t.pid})`).join(', ') || 'none';
-    vscode.window.showInformationMessage(`claude-phone terminals in this window: ${summary}`);
+  const refresh = async (): Promise<SessionList | undefined> => {
+    const list = await fetchSessions(daemonPort());
+    status.text = statusText(list);
+    status.tooltip = statusTooltip(list);
+    return list;
+  };
+  void refresh();
+  const timer = setInterval(() => void refresh(), REFRESH_MS);
+
+  const showSessions = vscode.commands.registerCommand('claudePhone.showSessions', async () => {
+    const list = await refresh();
+    if (!list) {
+      vscode.window.showWarningMessage(statusTooltip(undefined));
+      return;
+    }
+    const picked = await vscode.window.showQuickPick(quickPickItems(entries(list, await terminals.list())), {
+      title: `claude-phone · ${healthLine(list.health)}`,
+      placeHolder: list.sessions.length ? 'Dial an extension to reach its session. Pick one to show its terminal.'
+        : 'No sessions yet: start `claude` in a terminal.',
+    });
+    if (!picked?.entry) {
+      return;
+    }
+    const { entry } = picked;
+    if (!entry.terminal || !(await terminals.show(entry.terminal.pid))) {
+      vscode.window.showInformationMessage(`${entry.ext} ${entry.label} runs in another VS Code window.`);
+    }
   });
 
-  context.subscriptions.push(status, showTerminals);
+  context.subscriptions.push(status, showSessions, { dispose: () => clearInterval(timer) });
+}
+
+interface SessionPickItem extends vscode.QuickPickItem {
+  entry?: SessionEntry;
+}
+
+function quickPickItems(list: SessionEntry[]): SessionPickItem[] {
+  const toItem = (entry: SessionEntry): SessionPickItem => ({
+    label: `${entry.ext}  ${entry.label}`,
+    description: entry.status,
+    detail: entry.terminal ? `Terminal "${entry.terminal.name}"` : undefined,
+    entry,
+  });
+  const here = list.filter((e) => e.terminal);
+  const elsewhere = list.filter((e) => !e.terminal);
+  const separator = (label: string): SessionPickItem => ({ label, kind: vscode.QuickPickItemKind.Separator });
+  return [
+    ...(here.length ? [separator('This window'), ...here.map(toItem)] : []),
+    ...(elsewhere.length ? [separator('Other VS Code windows'), ...elsewhere.map(toItem)] : []),
+  ];
+}
+
+function daemonPort(): number {
+  return vscode.workspace.getConfiguration('claudePhone').get<number>('daemonPort', DEFAULT_DAEMON_PORT);
 }
 
 export function deactivate(): void {}

@@ -1,8 +1,8 @@
 {
   "name": "claude-phone",
   "displayName": "claude-phone",
-  "description": "Lets the claude-phone daemon type phone messages into Claude Code sessions running in VS Code terminals.",
-  "version": "0.1.0",
+  "description": "Lets the claude-phone daemon type phone messages into Claude Code sessions running in VS Code terminals, and lists the sessions with their extensions.",
+  "version": "0.2.0",
   "publisher": "jakobwulfi",
   "license": "MIT",
   "repository": {
@@ -22,10 +22,20 @@
   "contributes": {
     "commands": [
       {
-        "command": "claudePhone.showTerminals",
-        "title": "claude-phone: Show terminals"
+        "command": "claudePhone.showSessions",
+        "title": "claude-phone: Show sessions"
       }
-    ]
+    ],
+    "configuration": {
+      "title": "claude-phone",
+      "properties": {
+        "claudePhone.daemonPort": {
+          "type": "number",
+          "default": 8765,
+          "description": "Port of the claude-phone daemon on 127.0.0.1 (daemon_port in ~/.claude-phone/config.toml)."
+        }
+      }
+    }
   },
   "scripts": {
     "compile": "tsc -p .",

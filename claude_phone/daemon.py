@@ -792,23 +792,52 @@ class Controller:
                                        ("Sarah Jones", "Dan Smith")), now, dnd=False)
         return web.json_response({"ok": True})
 
+    async def health(self) -> dict:
+        return {"ok": True, "ip_warning": config.ip_warning(), "freeswitch": self.esl.connected.is_set(),
+                "ring_ext": self.s.ring_ext, "desk_online": await self.desk_online(), "line_busy": self.line.locked()}
+
     async def http_health(self, request: web.Request) -> web.Response:
-        return web.json_response({"ok": True, "ip_warning": config.ip_warning(), "freeswitch": self.esl.connected.is_set(),
-                                  "desk_online": await self.desk_online(), "line_busy": self.line.locked()})
+        return web.json_response(await self.health())
+
+    async def http_session_list(self, request: web.Request) -> web.Response:
+        """Live sessions and the system's state, for the VS Code status bar."""
+        sessions = [{"ext": x.ext, "label": x.label, "repo": x.repo, "branch": x.branch, "worktree": x.worktree,
+                     "status": x.status, "term_id": x.term_id} for x in registry.all_sessions()]
+        return web.json_response({"sessions": sessions, "health": await self.health()})
 
 
-async def main() -> None:
-    config.ensure_dirs()
-    c = Controller()
-    await c.start()
-    app = web.Application()
+LOCAL_HOSTS = {"127.0.0.1", "localhost"}
+
+
+@web.middleware
+async def local_callers_only(request: web.Request, handler):
+    """The localhost API rings the phone and lists sessions, so refuse web pages: a browser sends Origin on
+    cross-site requests, and a DNS-rebound name shows up in Host."""
+    if request.headers.get("Origin") is not None:
+        raise web.HTTPForbidden(text="browser requests are not allowed")
+    if (request.host or "").rsplit(":", 1)[0] not in LOCAL_HOSTS:
+        raise web.HTTPForbidden(text="unexpected host")
+    return await handler(request)
+
+
+def local_app(c: Controller) -> web.Application:
+    """The API on 127.0.0.1: the MCP server's calls, `phone status` and the VS Code extension."""
+    app = web.Application(middlewares=[local_callers_only])
     app.router.add_post("/call", c.http_call)
     app.router.add_post("/notify", c.http_notify)
     app.router.add_post("/transfer", c.http_transfer)
     app.router.add_post("/whisper", c.http_whisper)
     app.router.add_post("/meeting-test", c.http_meeting_test)
     app.router.add_get("/health", c.http_health)
-    runner = web.AppRunner(app)
+    app.router.add_get("/sessions", c.http_session_list)
+    return app
+
+
+async def main() -> None:
+    config.ensure_dirs()
+    c = Controller()
+    await c.start()
+    runner = web.AppRunner(local_app(c))
     await runner.setup()
     await web.TCPSite(runner, "127.0.0.1", c.s.daemon_port).start()
     book = web.Application()
