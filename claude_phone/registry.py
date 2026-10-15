@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   branch     TEXT,
   worktree   TEXT,
   cwd        TEXT,
-  iterm_id   TEXT,
+  term_id   TEXT,
   status     TEXT NOT NULL DEFAULT 'idle',
   started_at REAL NOT NULL,
   updated_at REAL NOT NULL
@@ -45,7 +45,7 @@ CREATE TABLE IF NOT EXISTS injections (
   ts         REAL NOT NULL,
   session_id TEXT,
   ext        INTEGER,
-  iterm_id   TEXT,
+  term_id   TEXT,
   source     TEXT NOT NULL,
   text       TEXT NOT NULL,
   result     TEXT NOT NULL
@@ -61,7 +61,7 @@ class Session:
     branch: str | None
     worktree: str | None
     cwd: str | None
-    iterm_id: str | None
+    term_id: str | None
     status: str
     started_at: float
     updated_at: float
@@ -107,7 +107,7 @@ def _session(row) -> Session | None:
 
 
 def register(session_id: str, repo: str, branch: str | None, worktree: str | None,
-             cwd: str | None, iterm_id: str | None) -> Session:
+             cwd: str | None, term_id: str | None) -> Session:
     """Add a session and give it an extension. A new session in a tab that already has one
     (after /clear, resume, compact) inherits that tab's extension."""
     s = config.load()
@@ -116,8 +116,8 @@ def register(session_id: str, repo: str, branch: str | None, worktree: str | Non
         db.execute("BEGIN IMMEDIATE")
         existing = db.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
         ext = existing["ext"] if existing else None
-        if ext is None and iterm_id:
-            prev = db.execute("SELECT * FROM sessions WHERE iterm_id=?", (iterm_id,)).fetchone()
+        if ext is None and term_id:
+            prev = db.execute("SELECT * FROM sessions WHERE term_id=?", (term_id,)).fetchone()
             if prev:
                 ext = prev["ext"]
                 db.execute("DELETE FROM sessions WHERE session_id=?", (prev["session_id"],))
@@ -131,11 +131,11 @@ def register(session_id: str, repo: str, branch: str | None, worktree: str | Non
                 db.execute("ROLLBACK")
                 raise RuntimeError("no free extensions")
         db.execute(
-            """INSERT INTO sessions (session_id, ext, repo, branch, worktree, cwd, iterm_id, status, started_at, updated_at)
+            """INSERT INTO sessions (session_id, ext, repo, branch, worktree, cwd, term_id, status, started_at, updated_at)
                VALUES (?,?,?,?,?,?,?, 'idle', ?, ?)
                ON CONFLICT(session_id) DO UPDATE SET repo=excluded.repo, branch=excluded.branch,
-                 worktree=excluded.worktree, cwd=excluded.cwd, iterm_id=excluded.iterm_id, updated_at=excluded.updated_at""",
-            (session_id, ext, repo, branch, worktree, cwd, iterm_id, now, now),
+                 worktree=excluded.worktree, cwd=excluded.cwd, term_id=excluded.term_id, updated_at=excluded.updated_at""",
+            (session_id, ext, repo, branch, worktree, cwd, term_id, now, now),
         )
         db.execute("COMMIT")
         return _session(db.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone())
@@ -161,22 +161,22 @@ def by_ext(ext: int) -> Session | None:
         return _session(db.execute("SELECT * FROM sessions WHERE ext=?", (ext,)).fetchone())
 
 
-def find(session_id: str | None, iterm_id: str | None = None) -> Session | None:
-    """Look up by session id, falling back to the iTerm tab (the MCP server's env keeps the
+def find(session_id: str | None, term_id: str | None = None) -> Session | None:
+    """Look up by session id, falling back to the terminal tab (the MCP server's env keeps the
     first session id even after /clear starts a new one in the same tab)."""
     with connect() as db:
         if session_id:
             r = db.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
             if r:
                 return _session(r)
-        if iterm_id:
-            return _session(db.execute("SELECT * FROM sessions WHERE iterm_id=?", (iterm_id,)).fetchone())
+        if term_id:
+            return _session(db.execute("SELECT * FROM sessions WHERE term_id=?", (term_id,)).fetchone())
     return None
 
 
-def remove_missing(live_iterm_ids: set[str]) -> list[Session]:
-    """Drop sessions whose iTerm session no longer exists. Returns the removed rows."""
-    gone = [s for s in all_sessions() if s.iterm_id and s.iterm_id not in live_iterm_ids]
+def remove_missing(live_term_ids: set[str]) -> list[Session]:
+    """Drop sessions whose terminal no longer exists. Returns the removed rows."""
+    gone = [s for s in all_sessions() if s.term_id and s.term_id not in live_term_ids]
     with connect() as db:
         for s in gone:
             db.execute("DELETE FROM sessions WHERE session_id=?", (s.session_id,))
@@ -233,7 +233,7 @@ def ringtone(repo: str, choices: int = 8) -> int:
 def log_injection(session: Session | None, source: str, text: str, result: str) -> None:
     with connect() as db:
         db.execute(
-            "INSERT INTO injections (ts, session_id, ext, iterm_id, source, text, result) VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO injections (ts, session_id, ext, term_id, source, text, result) VALUES (?,?,?,?,?,?,?)",
             (time.time(), session.session_id if session else None, session.ext if session else None,
-             session.iterm_id if session else None, source, text, result),
+             session.term_id if session else None, source, text, result),
         )

@@ -260,6 +260,15 @@ def cmd_list(a) -> None:
         print(f"{s.ext:<4} {s.repo[:22]:22} {b[:28]:28} {s.status:8} {ring:<5} {since}")
 
 
+def cmd_type(a) -> None:
+    """Type text into a session as if it came from the phone, to test the VS Code bridge without a call."""
+    from . import inject
+    sess = registry.by_ext(a.ext)
+    if not sess:
+        sys.exit(f"No session on extension {a.ext}. See: phone list")
+    print(inject.type_into(sess, a.text, "phone type"))
+
+
 def cmd_vm(a) -> None:
     for v in registry.pending_voicemails():
         t = datetime.fromtimestamp(v.created_at).strftime("%H:%M")
@@ -338,6 +347,10 @@ def main() -> None:
     sub.add_parser("uninstall-services").set_defaults(fn=cmd_uninstall_services)
     sub.add_parser("list").set_defaults(fn=cmd_list)
     sub.add_parser("vm", help="pending voicemail questions").set_defaults(fn=cmd_vm)
+    sp = sub.add_parser("type", help="type text into a session, as a phone message would be")
+    sp.add_argument("ext", type=int)
+    sp.add_argument("text")
+    sp.set_defaults(fn=cmd_type)
     sp = sub.add_parser("hook")
     sp.add_argument("event", choices=["session-start", "session-end", "prompt", "stop"])
     sp.set_defaults(fn=cmd_hook)

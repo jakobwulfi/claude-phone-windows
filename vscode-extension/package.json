@@ -1,0 +1,41 @@
+{
+  "name": "claude-phone",
+  "displayName": "claude-phone",
+  "description": "Lets the claude-phone daemon type phone messages into Claude Code sessions running in VS Code terminals.",
+  "version": "0.1.0",
+  "publisher": "jakobwulfi",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jakobwulfi/claude-phone-windows"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "claudePhone.showTerminals",
+        "title": "claude-phone: Show terminals"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "test": "npm run compile && node --test \"out/test/**/*.test.js\"",
+    "package": "npm run compile && vsce package --skip-license"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "~1.90.0",
+    "@vscode/vsce": "^3.2.0",
+    "typescript": "^5.6.0"
+  }
+}

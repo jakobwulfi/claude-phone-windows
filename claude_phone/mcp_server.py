@@ -1,5 +1,5 @@
-"""stdio MCP server exposing call_<owner>, notify_<owner> and transfer_call. One instance per Claude Code session; Claude Code passes
-CLAUDE_CODE_SESSION_ID and ITERM_SESSION_ID in the env, which identify the calling session."""
+"""stdio MCP server exposing call_<owner>, notify_<owner> and transfer_call. One instance per Claude Code session; the calling
+session is identified by CLAUDE_CODE_SESSION_ID in the env and by the VS Code terminal this process runs under."""
 
 from __future__ import annotations
 
@@ -8,8 +8,7 @@ import os
 import aiohttp
 from mcp.server.mcpserver import MCPServer
 
-from . import config
-from .hooks import iterm_unique_id
+from . import config, inject
 
 mcp = MCPServer("claude-phone")
 
@@ -18,7 +17,7 @@ def _body(**kw) -> dict:
     return {
         **kw,
         "session_id": os.environ.get("CLAUDE_CODE_SESSION_ID"),
-        "iterm_id": iterm_unique_id(),
+        "term_id": inject.terminal_id(),
         "cwd": os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd(),
     }
 

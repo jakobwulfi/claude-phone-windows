@@ -9,7 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import log, registry
+from . import inject, log, registry
 
 
 def _git(cwd: str, *args: str) -> str | None:
@@ -33,12 +33,6 @@ def repo_info(cwd: str) -> tuple[str, str | None, str | None]:
     return repo, branch, worktree
 
 
-def iterm_unique_id() -> str | None:
-    """ITERM_SESSION_ID looks like 'w3t0p0:<UUID>'; AppleScript's `unique id` is the UUID part."""
-    v = os.environ.get("ITERM_SESSION_ID")
-    return v.split(":", 1)[1] if v and ":" in v else v
-
-
 def run(event: str) -> int:
     lg = log.get("hook")
     try:
@@ -50,11 +44,11 @@ def run(event: str) -> int:
             return 0  # subagent events share the parent's session; nothing to register
         if event == "session-start":
             cwd = payload.get("cwd") or os.getcwd()
-            iterm = iterm_unique_id()
-            if not iterm:
-                return 0  # not in iTerm2: nothing we could type into
+            term = inject.terminal_id()
+            if not term:
+                return 0  # not in a VS Code terminal: nothing we could type into
             repo, branch, worktree = repo_info(cwd)
-            s = registry.register(sid, repo, branch, worktree, cwd, iterm)
+            s = registry.register(sid, repo, branch, worktree, cwd, term)
             registry.ringtone(repo)  # assign on first sight so repos get distinct rings
             lg.info("session start ext=%s %s sid=%s source=%s", s.ext, s.label, sid, payload.get("source"))
         elif event == "session-end":

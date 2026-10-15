@@ -4,7 +4,7 @@ from claude_phone.registry import Session
 
 def sess(ext, repo, branch="main", worktree=None):
     return Session(session_id=f"s{ext}", ext=ext, repo=repo, branch=branch, worktree=worktree, cwd=None,
-                   iterm_id=None, status="idle", started_at=0, updated_at=0)
+                   term_id=None, status="idle", started_at=0, updated_at=0)
 
 
 LIVE = [sess(301, "claude-phone", "master"), sess(302, "app-fe-v2"), sess(303, "site-be-v2"),

@@ -23,6 +23,8 @@ RECORDINGS = HOME / "recordings"
 MODELS = HOME / "models"
 LOGS = HOME / "logs"
 LOG_FILE = LOGS / "phone.log"
+# One file per VS Code window, written by the claude-phone extension: how to reach that window's terminals.
+BRIDGES = HOME / "bridges"
 CONFIG_FILE = HOME / "config.toml"
 
 

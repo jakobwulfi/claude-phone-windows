@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import re
 import time
 import uuid
 from datetime import datetime, timedelta
@@ -23,8 +22,6 @@ VOICEMAIL_MESSAGE = ("{owner} didn't answer. A voicemail has been left. Carry on
                      "assumption; the answer will arrive later as a new message in this session.")
 ANSWER_PREFIX = "[Phone answer to your earlier question]"
 ALLHANDS_PREFIX = "[All-hands message from {owner}, sent to every session]"
-# Claude Code's spinner line while a turn runs, e.g. "· Generating… (1m 51s · ↓ 4.3k tokens)".
-SPINNER = re.compile(r"…\s*\(\d+[hms]|esc to interrupt")
 HOLD_MAX = 600  # seconds on hold before the message is taken anyway
 # Hangup causes that mean "didn't pick up": no answer, busy, DND (480/486/603), unreachable.
 NOT_ANSWERED = "not answered"
@@ -182,7 +179,7 @@ class Controller:
             if missing == 2:
                 lg.warning(warning)
             try:
-                live = await asyncio.to_thread(inject.live_iterm_ids)
+                live = await asyncio.to_thread(inject.live_term_ids)
                 for s in registry.remove_missing(live):
                     lg.info("removed stale session ext=%s %s", s.ext, s.label)
             except Exception as e:
@@ -335,17 +332,10 @@ class Controller:
         return text if result == "sent" else None
 
     async def mid_task(self, ext: int) -> bool:
-        """The hooks say it's working and Claude Code's spinner is on screen. The hooks alone can stick on
-        'working': an Esc interrupt fires no Stop."""
+        """The hooks say a turn is running. VS Code can't show us the terminal's screen, so after an Esc
+        interrupt (which fires no Stop hook) this stays 'working' until the next turn ends; '#' skips the hold."""
         sess = registry.by_ext(ext)
-        if not sess or sess.status != "working" or not sess.iterm_id:
-            return False
-        try:
-            screen = await asyncio.to_thread(inject.read_screen, sess.iterm_id)
-        except Exception:
-            return False
-        tail = "\n".join([l for l in screen.splitlines() if l.strip()][-15:])
-        return bool(SPINNER.search(tail))
+        return bool(sess and sess.status == "working")
 
     async def hold(self, call: Call, sess: registry.Session) -> None:
         """If the session is mid-task, play hold music until its turn ends. Hash skips the wait; the
@@ -425,12 +415,12 @@ class Controller:
     def caller(self, body: dict) -> dict:
         """Who is calling: the registered session, registering it if its tab predates the hooks."""
         agent = (body.get("from_agent") or "").strip() or None
-        sess = registry.find(body.get("session_id"), body.get("iterm_id"))
-        if not sess and body.get("session_id") and body.get("iterm_id"):
+        sess = registry.find(body.get("session_id"), body.get("term_id"))  # term_id: the caller's VS Code terminal
+        if not sess and body.get("session_id") and body.get("term_id"):
             from .hooks import repo_info
             cwd = body.get("cwd") or os.getcwd()
             try:
-                sess = registry.register(body["session_id"], *repo_info(cwd), cwd, body["iterm_id"])
+                sess = registry.register(body["session_id"], *repo_info(cwd), cwd, body["term_id"])
                 lg.info("registered unknown caller ext=%s %s", sess.ext, sess.label)
             except Exception as e:
                 lg.warning("could not register caller: %r", e)

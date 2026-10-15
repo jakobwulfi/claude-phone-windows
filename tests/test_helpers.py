@@ -3,7 +3,7 @@ import struct
 import wave
 
 from claude_phone import stt, tts
-from claude_phone.daemon import SPINNER, browser_xml, caller_id
+from claude_phone.daemon import browser_xml, caller_id
 from claude_phone.config import Settings
 from claude_phone.registry import Session
 
@@ -22,17 +22,11 @@ def test_spoken_label():
 
 
 def test_browser_xml_lists_sessions_and_escapes():
-    s = Session(session_id="x", ext=301, repo="a&b", branch="main", worktree=None, cwd=None, iterm_id=None,
+    s = Session(session_id="x", ext=301, repo="a&b", branch="main", worktree=None, cwd=None, term_id=None,
                 status="idle", started_at=0, updated_at=0)
     xml = browser_xml([s], Settings())
     assert "<Prompt>301 a&amp;b/main</Prompt><URI>301</URI>" in xml
     assert "<Title>Claude (1 live)</Title>" in xml
-
-
-def test_spinner_detects_running_turn():
-    assert SPINNER.search("· Generating… (51s · ↓ 4.3k tokens · thought for 1s)")
-    assert SPINNER.search("✻ Pondering… (1m 3s · esc to interrupt)")
-    assert not SPINNER.search("❯ \n  ⏵⏵ auto mode on")
 
 
 def _wav(path, seconds, amp):

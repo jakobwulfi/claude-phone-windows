@@ -1,3 +1,7 @@
 .venv/
 __pycache__/
 *.egg-info/
+vscode-extension/node_modules/
+vscode-extension/out/
+*.vsix
+*.stackdump

@@ -133,7 +133,7 @@ def test_unanswered_call_leaves_voicemail_and_pushes(ctl, monkeypatch):
         return None, "not answered"
     monkeypatch.setattr(ctl, "desk_online", online)
     monkeypatch.setattr(ctl, "ring", ring)
-    res = run(ctl.call_owner({"question": "Merge it", "session_id": "s", "iterm_id": "tab"}))
+    res = run(ctl.call_owner({"question": "Merge it", "session_id": "s", "term_id": "tab"}))
     assert res["status"] == "voicemail"
     assert [v.question for v in registry.pending_voicemails()] == ["Merge it."]
     assert ctl.pushed == [("Missed call", "repo/main", "Merge it.", "not answered")]
