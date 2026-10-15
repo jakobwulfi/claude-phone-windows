@@ -1,0 +1,161 @@
+<?xml version="1.0"?>
+<!-- claude-phone's whole FreeSWITCH config, rendered into ~/.claude-phone/freeswitch/conf by `phone up` and
+     `phone config` (@@KEY@@ values filled in). Two SIP accounts (desk phone and Linphone), an event socket on
+     localhost for the daemon, and a dial plan that hands every call except the echo and tone tests to the daemon.
+     Nothing else: no demo users, no voicemail app, no conferencing. -->
+<document type="freeswitch/xml">
+  <X-PRE-PROCESS cmd="set" data="lan_ip=@@LAN_IP@@"/>
+  <X-PRE-PROCESS cmd="set" data="domain=@@LAN_IP@@"/>
+
+  <section name="configuration" description="Modules and their settings">
+    <configuration name="switch.conf" description="Core">
+      <settings>
+        <param name="max-sessions" value="20"/>
+        <param name="sessions-per-second" value="10"/>
+        <param name="loglevel" value="info"/>
+        <!-- A narrow RTP range, so a firewall rule for the desk phone stays small. -->
+        <param name="rtp-start-port" value="@@RTP_START@@"/>
+        <param name="rtp-end-port" value="@@RTP_END@@"/>
+        <!-- Channel variables in events: the daemon reads which digit ended a recording. -->
+        <param name="verbose-channel-events" value="true"/>
+        <param name="dump-cores" value="no"/>
+      </settings>
+    </configuration>
+
+    <configuration name="modules.conf" description="Modules">
+      <modules>
+        <load module="mod_console"/>
+        <load module="mod_logfile"/>
+        <load module="mod_event_socket"/>
+        <load module="mod_sofia"/>
+        <load module="mod_commands"/>
+        <load module="mod_dptools"/>
+        <load module="mod_dialplan_xml"/>
+        <load module="mod_spandsp"/>      <!-- G.722 (wideband) for the desk phone -->
+        <load module="mod_sndfile"/>      <!-- .wav playback and recording -->
+        <load module="mod_tone_stream"/>  <!-- the 601 test tone -->
+      </modules>
+    </configuration>
+
+    <configuration name="console.conf" description="Console logger">
+      <mappings>
+        <map name="all" value="console,info,notice,warning,err,crit,alert"/>
+      </mappings>
+      <settings>
+        <param name="colorize" value="false"/>
+        <param name="loglevel" value="info"/>
+      </settings>
+    </configuration>
+
+    <configuration name="logfile.conf" description="File logger">
+      <settings>
+        <param name="rotate-on-hup" value="true"/>
+      </settings>
+      <profiles>
+        <profile name="default">
+          <settings>
+            <param name="rollover" value="10485760"/>
+            <param name="maximum-rotate" value="3"/>
+          </settings>
+          <mappings>
+            <map name="all" value="info,notice,warning,err,crit,alert"/>
+          </mappings>
+        </profile>
+      </profiles>
+    </configuration>
+
+    <configuration name="event_socket.conf" description="The daemon's connection">
+      <settings>
+        <param name="nat-map" value="false"/>
+        <param name="listen-ip" value="127.0.0.1"/>
+        <param name="listen-port" value="@@ESL_PORT@@"/>
+        <param name="password" value="@@ESL_PASSWORD@@"/>
+        <param name="apply-inbound-acl" value="loopback.auto"/>
+      </settings>
+    </configuration>
+
+    <configuration name="sofia.conf" description="SIP">
+      <global_settings>
+        <param name="log-level" value="0"/>
+      </global_settings>
+      <profiles>
+        <profile name="internal">
+          <domains>
+            <domain name="all" alias="true" parse="false"/>
+          </domains>
+          <settings>
+            <param name="context" value="phones"/>
+            <param name="dialplan" value="XML"/>
+            <param name="sip-ip" value="$${lan_ip}"/>
+            <param name="sip-port" value="5060"/>
+            <param name="rtp-ip" value="$${lan_ip}"/>
+            <param name="ext-sip-ip" value="$${lan_ip}"/>
+            <param name="ext-rtp-ip" value="$${lan_ip}"/>
+            <param name="inbound-codec-prefs" value="G722,PCMU,PCMA"/>
+            <param name="outbound-codec-prefs" value="G722,PCMU,PCMA"/>
+            <param name="dtmf-type" value="rfc2833"/>
+            <param name="rfc2833-pt" value="101"/>
+            <!-- Every registration and call must authenticate as one of the two users below. -->
+            <param name="auth-calls" value="true"/>
+            <param name="accept-blind-reg" value="false"/>
+            <param name="accept-blind-auth" value="false"/>
+            <param name="challenge-realm" value="auto_to"/>
+            <param name="force-register-domain" value="$${domain}"/>
+            <param name="force-register-db-domain" value="$${domain}"/>
+            <param name="force-subscription-domain" value="$${domain}"/>
+            <!-- The message light: phones subscribe to message-summary, the daemon sends MESSAGE_WAITING. -->
+            <param name="manage-presence" value="true"/>
+            <param name="presence-hosts" value="$${domain}"/>
+            <param name="rtp-timeout-sec" value="300"/>
+            <param name="rtp-hold-timeout-sec" value="1800"/>
+          </settings>
+        </profile>
+      </profiles>
+    </configuration>
+  </section>
+
+  <section name="dialplan" description="Calls from the phones">
+    <context name="phones">
+      <extension name="echo">
+        <condition field="destination_number" expression="^600$">
+          <action application="answer"/>
+          <action application="echo"/>
+        </condition>
+      </extension>
+      <extension name="tone">
+        <condition field="destination_number" expression="^601$">
+          <action application="answer"/>
+          <action application="playback" data="tone_stream://%(60000,0,1000)"/>
+        </condition>
+      </extension>
+      <!-- Everything else (0, 9, 500, 301-399, ...) goes to the daemon, which answers and routes it. -->
+      <extension name="daemon">
+        <condition field="destination_number" expression="^\d+$">
+          <action application="park"/>
+        </condition>
+      </extension>
+    </context>
+  </section>
+
+  <section name="directory" description="The phones">
+    <domain name="$${domain}">
+      <params>
+        <param name="dial-string" value="{^^:sip_invite_domain=${dialed_domain}:presence_id=${dialed_user}@${dialed_domain}}${sofia_contact(*/${dialed_user}@${dialed_domain})}"/>
+      </params>
+      <groups>
+        <group name="phones">
+          <users>
+            <user id="@@DESK_EXT@@">
+              <params><param name="password" value="@@SIP_PASSWORD@@"/></params>
+              <variables><variable name="user_context" value="phones"/></variables>
+            </user>
+            <user id="@@SOFT_EXT@@">
+              <params><param name="password" value="@@SIP_PASSWORD@@"/></params>
+              <variables><variable name="user_context" value="phones"/></variables>
+            </user>
+          </users>
+        </group>
+      </groups>
+    </domain>
+  </section>
+</document>

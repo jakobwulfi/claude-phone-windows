@@ -1,4 +1,4 @@
-"""Call flows against a scripted fake call: no Asterisk, audio, whisper or iTerm."""
+"""Call flows against a scripted fake call: no FreeSWITCH, audio, whisper or VS Code."""
 
 import asyncio
 

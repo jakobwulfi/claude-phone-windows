@@ -13,11 +13,11 @@ def _file(path, age_days, size=10):
 
 
 def test_old_recordings_and_speech_expire_but_pending_question_kept():
-    rec = config.ASTERISK_PREFIX / "var/spool/asterisk/recording"
-    old_rec, new_rec = _file(rec / "old.wav16", 31), _file(rec / "new.wav16", 1)
+    rec = config.RECORDINGS
+    old_rec, new_rec = _file(rec / "old.wav", 31), _file(rec / "new.wav", 1)
     tts = config.SOUNDS / "tts"
-    old_tts, pending = _file(tts / "old.wav16", 40), _file(tts / "pending.wav16", 40)
-    registry.add_voicemail("s", 301, "repo", "Q?", None, f"sound:{tts / 'pending'}")
+    old_tts, pending = _file(tts / "old.wav", 40), _file(tts / "pending.wav", 40)
+    registry.add_voicemail("s", 301, "repo", "Q?", None, pending.as_posix())
     done = housekeeping.run()
     assert (done["recordings"], done["speech"]) == (1, 1)
     assert not old_rec.exists() and new_rec.exists()

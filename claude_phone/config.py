@@ -14,11 +14,9 @@ import psutil
 HOME = Path(os.environ.get("CLAUDE_PHONE_HOME", Path.home() / ".claude-phone"))
 REPO = Path(__file__).resolve().parent.parent
 
-ASTERISK_PREFIX = HOME / "asterisk"
-ASTERISK_BIN = ASTERISK_PREFIX / "sbin" / "asterisk"
-ASTERISK_ETC = HOME / "etc" / "asterisk"
-# macOS unix socket paths are capped at 104 chars, so the run dir must be short.
-ASTERISK_RUN = Path("/tmp/cphone")
+# FreeSWITCH runs from its install folder with everything it writes under here: config, log, db, run, cache.
+FREESWITCH = HOME / "freeswitch"
+FREESWITCH_CONF = FREESWITCH / "conf"
 DB_PATH = HOME / "registry.db"
 SOUNDS = HOME / "sounds"
 RECORDINGS = HOME / "recordings"
@@ -48,7 +46,8 @@ class Settings:
     operator_voice: str = "Microsoft Zira Desktop"  # `phone voices` lists the installed Windows voices
     first_session_ext: int = 301  # not 1xx: UK 101 is the police, 111 the NHS
     last_session_ext: int = 399
-    ari_port: int = 8088
+    freeswitch_exe: str = r"C:\Program Files\FreeSWITCH\FreeSwitchConsole.exe"
+    esl_port: int = 8021  # FreeSWITCH's event socket, on 127.0.0.1 only
     daemon_port: int = 8765
     whisper_port: int = 8910
     # On a Ryzen 5 5500 CPU: ~1.8 s per answer. large-v3-turbo-q5_0 took ~8.4 s (fine with a GPU), base.en-q5_1 ~0.55 s.
@@ -98,10 +97,6 @@ class Settings:
         return re.sub(r"[^a-z0-9]+", "_", name).strip("_") or "user"
 
     @property
-    def ari_url(self) -> str:
-        return f"http://127.0.0.1:{self.ari_port}/ari"
-
-    @property
     def daemon_url(self) -> str:
         return f"http://127.0.0.1:{self.daemon_port}"
 
@@ -125,9 +120,9 @@ def load() -> Settings:
 
 
 def bound_ip() -> str | None:
-    """The address the generated Asterisk config listens on, which stays put when a detected lan_ip moves."""
-    conf = ASTERISK_ETC / "pjsip.conf"
-    m = re.search(r"^bind=([\d.]+):", conf.read_text(), re.M) if conf.exists() else None
+    """The address the generated FreeSWITCH config listens on, which stays put when a detected lan_ip moves."""
+    conf = FREESWITCH_CONF / "freeswitch.xml"
+    m = re.search(r'data="lan_ip=([\d.]+)"', conf.read_text()) if conf.exists() else None
     return m.group(1) if m else None
 
 
@@ -158,9 +153,9 @@ def ip_warning() -> str | None:
         return None
     return (f"This PC doesn't have {ip}, so the desk phone can't be reached: calls go to voicemail "
             f"and missed-call pushes. Away from home, that's expected. If the home address changed for good, set "
-            f"lan_ip in {CONFIG_FILE}, run `phone restart asterisk`, and update the SIP server on the phones.")
+            f"lan_ip in {CONFIG_FILE}, run `phone restart freeswitch`, and update the SIP server on the phones.")
 
 
 def ensure_dirs() -> None:
-    for d in (HOME, ASTERISK_ETC, SOUNDS, RECORDINGS, MODELS, LOGS):
+    for d in (HOME, FREESWITCH_CONF, SOUNDS, RECORDINGS, MODELS, LOGS):
         d.mkdir(parents=True, exist_ok=True)

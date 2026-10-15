@@ -4,7 +4,6 @@ as its Push XML Server (Features → Remote Control), so requests leave from lan
 from __future__ import annotations
 
 import re
-import subprocess
 from xml.sax.saxutils import escape
 
 import aiohttp
@@ -24,10 +23,11 @@ def desk_ip(s: config.Settings) -> str | None:
     """desk_ip from config, else the address the desk phone registered from."""
     if s.desk_ip:
         return s.desk_ip
-    from .cli import asterisk_rx
+    from .cli import freeswitch_api
+    from .esl import ESLError
     try:
-        out = asterisk_rx(f"pjsip show contacts like {s.desk_ext}")
-    except (OSError, subprocess.SubprocessError):
+        out = freeswitch_api(f"sofia_contact internal/{s.desk_ext}@{s.lan_ip}")
+    except (OSError, ConnectionError, ESLError):
         return None
     m = re.search(rf"sip:{s.desk_ext}@([\d.]+)", out)
     return m.group(1) if m else None

@@ -1,5 +1,5 @@
-"""Text to speech with swappable providers. Output is 16 kHz mono 16-bit WAV saved as *.wav16,
-which Asterisk plays natively (no transcoding for G.722 calls). Results are cached by content hash."""
+"""Text to speech with swappable providers. Output is 16 kHz mono 16-bit WAV, which FreeSWITCH plays without
+resampling on G.722 calls. Results are cached by content hash. Paths use forward slashes, as FreeSWITCH wants."""
 
 from __future__ import annotations
 
@@ -124,7 +124,7 @@ def voice_for(repo: str | None) -> tuple[str, str | None]:
 
 
 def render(text: str, repo: str | None = None, voice: tuple[str, str | None] | None = None) -> str:
-    """Render (or reuse) speech for text. Returns the Asterisk media URI ('sound:/abs/path' without extension).
+    """Render (or reuse) speech for text. Returns the .wav file's path, ready to play.
     `voice` is (provider, voice) and overrides the repo's voice."""
     provider, voice = voice or voice_for(repo)
     if not voice:  # name the default voice in the cache key, so changing it in config isn't masked by old speech
@@ -132,7 +132,7 @@ def render(text: str, repo: str | None = None, voice: tuple[str, str | None] | N
         voice = s.sapi_voice if provider == "sapi" else s.elevenlabs_voice_id
     key = hashlib.sha256(json.dumps([provider, voice, text]).encode()).hexdigest()[:20]
     base = config.SOUNDS / "tts" / key
-    out = base.with_suffix(".wav16")
+    out = base.with_suffix(".wav")
     if out.exists():
         out.touch()  # housekeeping expires speech by last use
     else:
@@ -145,7 +145,7 @@ def render(text: str, repo: str | None = None, voice: tuple[str, str | None] | N
                 raise
             PROVIDERS["sapi"].render(text, None, tmp)  # never leave a call silent
         tmp.replace(out)
-    return f"sound:{base}"
+    return out.as_posix()
 
 
 async def render_async(text: str, repo: str | None = None, voice: tuple[str, str | None] | None = None) -> str:
@@ -170,7 +170,7 @@ def beep() -> str:
     import math
     import struct
     base = config.SOUNDS / "beep"
-    out = base.with_suffix(".wav16")
+    out = base.with_suffix(".wav")
     if not out.exists():
         out.parent.mkdir(parents=True, exist_ok=True)
         rate, dur = 16000, 0.25
@@ -182,7 +182,7 @@ def beep() -> str:
         tmp = base.with_suffix(".tmp.wav")
         _write_wav(tmp, frames, rate)
         tmp.replace(out)
-    return f"sound:{base}"
+    return out.as_posix()
 
 
 # Fixed phrases, pre-rendered by `phone prerender` and on daemon start.

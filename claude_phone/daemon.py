@@ -1,4 +1,4 @@
-"""Controller daemon: owns every call. Talks to Asterisk over ARI and serves call_<owner> on localhost."""
+"""Controller daemon: owns every call. Talks to FreeSWITCH over its event socket and serves call_<owner> on localhost."""
 
 from __future__ import annotations
 
@@ -13,11 +13,10 @@ from pathlib import Path
 from aiohttp import web
 
 from . import config, diary, hold, housekeeping, inject, keychain, log, push, registry, screen, stt, tts
-from .ari import ARI, Call, Hangup
+from .esl import ESL, Call, Hangup, new_id, originate_vars
 
 lg = log.get("daemon")
 
-MAILBOX = "owner@claude"
 VOICEMAIL_MESSAGE = ("{owner} didn't answer. A voicemail has been left. Carry on with other work or your best "
                      "assumption; the answer will arrive later as a new message in this session.")
 ANSWER_PREFIX = "[Phone answer to your earlier question]"
@@ -32,7 +31,7 @@ PUSH_SKIP = {"hung up before answering", "answered but nothing was said", IN_MEE
 
 
 def recording_path(name: str) -> Path:
-    return config.ASTERISK_PREFIX / "var/spool/asterisk/recording" / f"{name}.wav16"
+    return config.RECORDINGS / f"{name}.wav"
 
 
 def ringtone(repo: str, overrides: dict) -> int:
@@ -85,10 +84,10 @@ def caller_id(label: str, limit: int) -> str:
 class Controller:
     def __init__(self):
         self.s = config.load()
-        self.ari = ARI(self.s.ari_url, "phone", keychain.get_or_create("ari"))
+        self.esl = ESL("127.0.0.1", self.s.esl_port, keychain.get_or_create("esl"), config.RECORDINGS)
         self.line = asyncio.Lock()  # one call with the owner at a time
         self.calls: dict[str, asyncio.Task] = {}
-        self.endpoint_state: dict[str, str] = {}
+        self.registered: dict[str, bool] = {}  # phone extension -> registered, from sofia events
         self.meeting: diary.Meeting | None = None  # the meeting in (or about to start) that holds calls
         self.window: set[str] = set()  # keys of the meetings in the current window
         self.released: set[str] = set()  # meetings whose hold was ended early with the DND key
@@ -98,14 +97,12 @@ class Controller:
     # --- lifecycle ---
 
     async def start(self) -> None:
-        await self.ari.start()
-        self.ari.on_event(self.on_event)
-        self.ari.on_connect.append(self.subscribe_phones)
-        asyncio.create_task(self.ari.run_events())
+        self.esl.on_event(self.on_event)
+        self.esl.on_connect.append(self.update_mwi)
+        asyncio.create_task(self.esl.run())
         await asyncio.to_thread(tts.prerender)
         asyncio.create_task(self.sweeper())
-        await asyncio.wait_for(self.ari.connected.wait(), 30)
-        await self.update_mwi()
+        await asyncio.wait_for(self.esl.connected.wait(), 30)
         if self.s.meeting_alerts:
             asyncio.create_task(self.meeting_watch())
 
@@ -194,50 +191,52 @@ class Controller:
             sweeps += 1
             await asyncio.sleep(60)
 
-    async def subscribe_phones(self) -> None:
-        """Watch the phones' registration. Asterisk only sends MWI when the count changes, so a phone
-        that was offline when a voicemail arrived never lights up unless we resend on its return."""
-        for ext in {self.s.desk_ext, self.s.softphone_ext}:
-            try:
-                await self.ari.post("/applications/claude-phone/subscription", eventSource=f"endpoint:PJSIP/{ext}")
-            except Exception as e:
-                lg.warning("endpoint subscription for %s failed: %r", ext, e)
-
     async def update_mwi(self) -> None:
+        """The message light on both phones: FreeSWITCH sends each a NOTIFY with the pending count."""
         n = len(registry.pending_voicemails())
-        try:
-            await self.ari.put(f"/mailboxes/{MAILBOX}", oldMessages=0, newMessages=n)
-        except Exception as e:
-            lg.warning("MWI update failed: %r", e)
+        for ext in (self.s.desk_ext, self.s.softphone_ext):
+            try:
+                await self.esl.sendevent("MESSAGE_WAITING", {
+                    "MWI-Messages-Waiting": "yes" if n else "no",
+                    "MWI-Message-Account": f"sip:{ext}@{self.s.lan_ip}",
+                    "MWI-Voice-Message": f"{n}/0 (0/0)",
+                })
+            except Exception as e:
+                lg.warning("MWI update for %s failed: %r", ext, e)
 
     async def desk_online(self) -> bool:
-        ep = await self.ari.get(f"/endpoints/PJSIP/{self.s.ring_ext}", ok404=True)
-        return bool(ep) and ep.get("state") == "online"
+        try:
+            contact = await self.esl.api(f"sofia_contact internal/{self.s.ring_ext}@{self.s.lan_ip}")
+        except Exception:
+            return False
+        return not contact.startswith("error/")
 
     # --- events ---
 
     def on_event(self, ev: dict) -> None:
-        if ev.get("type") == "EndpointStateChange":
-            # Also fires when a call starts or ends; only a return from offline needs the light resent.
-            ep = ev.get("endpoint", {})
-            res, state = ep.get("resource"), ep.get("state")
-            was, self.endpoint_state[res] = self.endpoint_state.get(res), state
-            if state == "online" and was != "online":
-                lg.info("phone %s online; resending message light", res)
+        name = ev.get("Event-Name")
+        if name == "CUSTOM" and ev.get("Event-Subclass", "").startswith("sofia::"):
+            # Re-registrations repeat every few minutes; only a return from offline needs the light resent.
+            ext = ev.get("from-user") or ev.get("username") or ev.get("user")
+            online = ev["Event-Subclass"] == "sofia::register"
+            was, self.registered[ext] = self.registered.get(ext), online
+            if online and not was:
+                lg.info("phone %s registered; resending message light", ext)
                 asyncio.create_task(self.update_mwi())
+            elif was and not online:
+                lg.info("phone %s unregistered", ext)
             return
-        if ev.get("type") != "StasisStart":
+        # The dial plan parks calls for the daemon. Outbound calls park too, but their ring() is waiting on them.
+        if name != "CHANNEL_PARK" or ev.get("Call-Direction") != "inbound":
             return
-        args = ev.get("args") or []
-        if args and args[0] == "outbound":
-            return  # handled by the call_owner flow waiting on it
-        ch = ev["channel"]
-        exten = args[0] if args else ch.get("dialplan", {}).get("exten", "")
-        self.calls[ch["id"]] = asyncio.create_task(self.inbound(ch, exten))
+        uid = ev["Unique-ID"]
+        if uid in self.calls:
+            return
+        exten = ev.get("Caller-Destination-Number", "")
+        self.calls[uid] = asyncio.create_task(self.inbound(uid, exten, ev.get("Caller-Caller-ID-Number")))
 
-    async def inbound(self, ch: dict, exten: str) -> None:
-        call = Call(self.ari, ch["id"])
-        who = ch.get("caller", {}).get("number")
+    async def inbound(self, uid: str, exten: str, who: str | None) -> None:
+        call = Call(self.esl, uid)
         lg.info("inbound call from %s to %s", who, exten)
         try:
             if self.line.locked():
@@ -266,7 +265,7 @@ class Controller:
             except Exception:
                 pass
             call.close()
-            self.calls.pop(ch["id"], None)
+            self.calls.pop(uid, None)
 
     # --- me ringing a session ---
 
@@ -440,26 +439,48 @@ class Controller:
     async def ring(self, c: dict, prefix: str, auto_answer: bool = False) -> tuple[Call | None, str]:
         """Ring the desk phone. Returns (answered call, '') or (None, why not). Caller holds self.line.
         auto_answer: an intercom call, which the phone picks up on the speaker without ringing."""
-        chan_id = f"{prefix}-{uuid.uuid4().hex[:12]}"
-        answered = self.ari.wait_for(lambda e: e.get("type") == "StasisStart" and e["channel"]["id"] == chan_id)
-        call = Call(self.ari, chan_id)
+        chan_id, job_id = new_id(prefix), str(uuid.uuid4())
+        answered = self.esl.wait_for(lambda e: e.get("Event-Name") == "CHANNEL_ANSWER" and e.get("Unique-ID") == chan_id)
+        job = self.esl.wait_for(lambda e: e.get("Event-Name") == "BACKGROUND_JOB" and e.get("Job-UUID") == job_id)
+        call = Call(self.esl, chan_id)
         cid = caller_id(c["label"], self.s.callerid_max)
+        variables = {"origination_uuid": chan_id, "originate_timeout": str(self.s.ring_seconds),
+                     "origination_caller_id_name": cid, "origination_caller_id_number": str(c["ext"] or "")}
         if auto_answer:
-            headers = {"PJSIP_HEADER(add,Alert-Info)": "<http://127.0.0.1>;info=alert-autoanswer",
-                       "PJSIP_HEADER(add,Call-Info)": "<sip:127.0.0.1>;answer-after=0"}
+            variables |= {"sip_h_Alert-Info": "<http://127.0.0.1>;info=alert-autoanswer",
+                          "sip_h_Call-Info": "<sip:127.0.0.1>;answer-after=0"}
         else:
-            headers = {"PJSIP_HEADER(add,Alert-Info)": f"<http://127.0.0.1>;info=Ring{ringtone(c['repo'], self.s.repo_ringtones)}"}
-        await self.ari.post("/channels", channelId=chan_id, endpoint=f"PJSIP/{self.s.ring_ext}",
-                            app="claude-phone", appArgs="outbound",
-                            callerId=f'"{cid}" <{c["ext"] or ""}>', timeout=self.s.ring_seconds,
-                            body={"variables": headers})
-        done, _ = await asyncio.wait({answered, call.gone}, timeout=self.s.ring_seconds + 5,
-                                     return_when=asyncio.FIRST_COMPLETED)
-        if answered in done:
-            lg.info("call answered for %s", c["label"])
-            return call, ""
-        self.ari.cancel_wait(answered)
-        cause = call.gone.result().get("cause_txt") if call.gone in done else "timeout"
+            variables["sip_h_Alert-Info"] = f"<http://127.0.0.1>;info=Ring{ringtone(c['repo'], self.s.repo_ringtones)}"
+        dial = f"originate {originate_vars(variables)}user/{self.s.ring_ext}@{self.s.lan_ip} &park()"
+        try:
+            await self.esl.bgapi(dial, job_id)
+        except Exception:
+            self.esl.cancel_wait(answered)
+            self.esl.cancel_wait(job)
+            call.close()
+            raise
+        cause = "timeout"
+        deadline = time.monotonic() + self.s.ring_seconds + 5
+        while (left := deadline - time.monotonic()) > 0:
+            done, _ = await asyncio.wait({answered, call.gone, job}, timeout=left, return_when=asyncio.FIRST_COMPLETED)
+            if answered in done:
+                self.esl.cancel_wait(job)
+                lg.info("call answered for %s", c["label"])
+                return call, ""
+            if call.gone in done:
+                cause = call.gone.result().get("Hangup-Cause", "hung up")
+                break
+            if job in done:
+                # Success ("+OK <uuid>") only arrives once answered; an error means the call never rang or stopped.
+                result = job.result().get("_body", "").strip()
+                if result.startswith("-ERR"):
+                    cause = result.removeprefix("-ERR").strip() or "failed"
+                    break
+                job = asyncio.get_running_loop().create_future()
+            if not done:
+                break
+        self.esl.cancel_wait(answered)
+        self.esl.cancel_wait(job)
         await call.hangup()
         call.close()
         lg.info("call to %s not answered: %s", self.s.ring_ext, cause)
@@ -771,7 +792,7 @@ class Controller:
         return web.json_response({"ok": True})
 
     async def http_health(self, request: web.Request) -> web.Response:
-        return web.json_response({"ok": True, "ip_warning": config.ip_warning(), "ari": self.ari.connected.is_set(),
+        return web.json_response({"ok": True, "ip_warning": config.ip_warning(), "freeswitch": self.esl.connected.is_set(),
                                   "desk_online": await self.desk_online(), "line_busy": self.line.locked()})
 
 
@@ -795,13 +816,13 @@ async def main() -> None:
     book.router.add_get("/dnd/{state:on|off}", c.http_dnd)
     book_runner = web.AppRunner(book)
     await book_runner.setup()
-    lg.info("daemon up on 127.0.0.1:%s, ringing PJSIP/%s", c.s.daemon_port, c.s.ring_ext)
+    lg.info("daemon up on 127.0.0.1:%s, ringing %s", c.s.daemon_port, c.s.ring_ext)
     asyncio.create_task(serve_phonebook(book_runner, c.s))
     await asyncio.Event().wait()
 
 
 async def serve_phonebook(runner: web.AppRunner, s: config.Settings) -> None:
-    """The phonebook binds to the home LAN address, which is missing while the Mac is on another network.
+    """The phonebook binds to the home LAN address, which is missing while the PC is on another network.
     Keep retrying rather than taking the daemon (and missed-call pushes) down with it."""
     while True:
         try:

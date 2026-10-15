@@ -47,10 +47,9 @@ def _truncate(path: Path) -> bool:
 def run(now: float | None = None) -> dict:
     cutoff = (now or time.time()) - RETAIN_DAYS * 86400
     # A pending voicemail still needs its question audio.
-    pending = {Path(v.audio.removeprefix("sound:") + ".wav16") for v in registry.pending_voicemails() if v.audio}
-    rec = config.ASTERISK_PREFIX / "var/spool/asterisk/recording"
+    pending = {Path(v.audio) for v in registry.pending_voicemails() if v.audio}
     return {
-        "recordings": _expire(rec, cutoff),
+        "recordings": _expire(config.RECORDINGS, cutoff),
         "speech": _expire(config.SOUNDS / "tts", cutoff, pending),
         "rotated": _rotate(config.LOG_FILE),
         "truncated": sum(_truncate(p) for p in config.LOGS.glob("*.out")),

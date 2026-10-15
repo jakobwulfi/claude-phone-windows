@@ -23,34 +23,42 @@ STOP_TIMEOUT_S = 5
 MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{}"
 
 
-# --- Asterisk config ---
+# --- FreeSWITCH ---
 
-def render_asterisk_config() -> None:
+# Media ports for calls; open these (UDP) and 5060 in Windows Firewall for a desk phone on the LAN.
+RTP_START, RTP_END = 16384, 16484
+
+
+def render_freeswitch_config() -> None:
     s = config.load()
+    if not s.lan_ip:
+        sys.exit(f"No LAN address found: connect to the network, or set lan_ip in {config.CONFIG_FILE}")
     subs = {
-        "ETC": str(config.ASTERISK_ETC), "PREFIX": str(config.ASTERISK_PREFIX), "HOME": str(config.HOME),
-        "RUN": str(config.ASTERISK_RUN), "ARI_PORT": str(s.ari_port), "LAN_IP": s.lan_ip,
-        "LAN_CIDR": s.lan_cidr, "DESK_EXT": s.desk_ext, "SOFT_EXT": s.softphone_ext,
-        "SIP_PASSWORD": keychain.get_or_create("sip"), "ARI_PASSWORD": keychain.get_or_create("ari"),
+        "LAN_IP": s.lan_ip, "ESL_PORT": str(s.esl_port), "ESL_PASSWORD": keychain.get_or_create("esl"),
+        "DESK_EXT": s.desk_ext, "SOFT_EXT": s.softphone_ext, "SIP_PASSWORD": keychain.get_or_create("sip"),
+        "RTP_START": str(RTP_START), "RTP_END": str(RTP_END),
     }
-    config.ASTERISK_ETC.mkdir(parents=True, exist_ok=True)
-    (config.HOME / "logs" / "asterisk").mkdir(parents=True, exist_ok=True)
-    for tmpl in sorted((config.REPO / "asterisk").glob("*.conf.tmpl")):
-        text = tmpl.read_text()
-        for k, v in subs.items():
-            text = text.replace(f"@@{k}@@", v)
-        out = config.ASTERISK_ETC / tmpl.name.removesuffix(".tmpl")
-        out.write_text(text)
-        out.chmod(0o600)
+    text = (config.REPO / "freeswitch" / "freeswitch.xml.tmpl").read_text(encoding="utf-8")
+    for k, v in subs.items():
+        text = text.replace(f"@@{k}@@", v)
+    config.FREESWITCH_CONF.mkdir(parents=True, exist_ok=True)
+    (config.FREESWITCH_CONF / "freeswitch.xml").write_text(text, encoding="utf-8")
 
 
-def asterisk_cmd(*args: str) -> list[str]:
-    return [str(config.ASTERISK_BIN), "-C", str(config.ASTERISK_ETC / "asterisk.conf"), *args]
+def freeswitch_argv(s: config.Settings) -> list[str]:
+    """FreeSWITCH from its install folder, with config, logs, database and recordings under ~/.claude-phone."""
+    fs = config.FREESWITCH
+    dirs = {"-conf": config.FREESWITCH_CONF, "-log": fs / "log", "-db": fs / "db", "-run": fs / "run",
+            "-cache": fs / "cache", "-temp": fs / "temp", "-storage": fs / "storage", "-recordings": config.RECORDINGS}
+    for d in dirs.values():
+        d.mkdir(parents=True, exist_ok=True)
+    return [s.freeswitch_exe, "-nonat", "-nonatmap", *(x for flag, d in dirs.items() for x in (flag, str(d)))]
 
 
-def asterisk_rx(cmd: str) -> str:
-    r = subprocess.run(asterisk_cmd("-rx", cmd), capture_output=True, text=True, timeout=10)
-    return r.stdout
+def freeswitch_api(cmd: str) -> str:
+    """One FreeSWITCH command, for the command line."""
+    from . import esl
+    return esl.api_sync(cmd, config.load().esl_port, keychain.get_or_create("esl"))
 
 
 # --- processes ---
@@ -120,7 +128,7 @@ def whisper_server(s: config.Settings) -> str:
 WHISPER_THREADS = psutil.cpu_count(logical=False) or 4
 
 SERVICES = {
-    "asterisk": lambda s: asterisk_cmd("-f", "-n"),
+    "freeswitch": freeswitch_argv,
     "whisper": lambda s: [whisper_server(s), "-m", str(model_path()), "--host", "127.0.0.1", "--port", str(s.whisper_port),
                           "-t", str(WHISPER_THREADS), "--no-timestamps", "-l", s.whisper_language],
     "daemon": lambda s: py_argv("daemon"),
@@ -130,12 +138,12 @@ SERVICES = {
 def cmd_up(a) -> None:
     config.ensure_dirs()
     s = config.load()
-    render_asterisk_config()
+    render_freeswitch_config()
     ensure_model()
     names = [a.only] if a.only else list(SERVICES)
     for n in names:
         _spawn(n, SERVICES[n](s))
-        if n == "asterisk":
+        if n == "freeswitch":
             time.sleep(3)
         if n == "whisper":
             time.sleep(2)
@@ -164,8 +172,11 @@ def cmd_status(a) -> None:
             print("health   ", json.loads(r.read()))
     except Exception as e:
         print("health    unavailable:", e)
-    if _pid("asterisk"):
-        print(asterisk_rx("pjsip show contacts").strip())
+    if _pid("freeswitch"):
+        try:
+            print(freeswitch_api("show registrations").strip())
+        except Exception as e:
+            print("registrations unavailable:", e)
 
 
 def cmd_list(a) -> None:
@@ -283,8 +294,8 @@ def main() -> None:
     sp.set_defaults(fn=cmd_hook)
     sub.add_parser("daemon").set_defaults(fn=cmd_daemon)
     sub.add_parser("mcp").set_defaults(fn=cmd_mcp)
-    sp = sub.add_parser("secret", help="print (creating if needed) a keychain secret: sip | ari")
-    sp.add_argument("name", choices=["sip", "ari"])
+    sp = sub.add_parser("secret", help="print (creating if needed) a secret: sip (the phones' password) | esl")
+    sp.add_argument("name", choices=["sip", "esl"])
     sp.set_defaults(fn=cmd_secret)
     sp = sub.add_parser("hold-music", help="generate new hold music with ElevenLabs Music")
     sp.add_argument("prompt", nargs="?")
@@ -293,13 +304,13 @@ def main() -> None:
     sp = sub.add_parser("push", help="set up (or test) missed-call pushes to the ntfy app")
     sp.add_argument("action", nargs="?", choices=["setup", "test"], default="setup")
     sp.set_defaults(fn=cmd_push)
-    sp = sub.add_parser("say", help="render text to speech, print the media URI")
+    sp = sub.add_parser("say", help="render text to speech, print the audio file's path")
     sp.add_argument("text")
     sp.set_defaults(fn=cmd_say)
     sub.add_parser("voices", help="list the installed Windows voices").set_defaults(fn=cmd_voices)
     sub.add_parser("meeting-test", help="preview a meeting alert (whisper and screen)").set_defaults(fn=cmd_meeting_test)
     sub.add_parser("meetings", help="upcoming meetings the alerts will use").set_defaults(fn=cmd_meetings)
-    sub.add_parser("config", help="regenerate Asterisk config").set_defaults(fn=lambda a: render_asterisk_config())
+    sub.add_parser("config", help="regenerate FreeSWITCH config").set_defaults(fn=lambda a: render_freeswitch_config())
     a = p.parse_args()
     a.fn(a)
 
