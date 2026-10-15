@@ -266,16 +266,22 @@ def on_originate(events: Callable[[str, dict[str, str]], list[dict]]):
 CALLER = {"label": "repo/main", "repo": "repo", "ext": 301}
 
 
-def test_ring_returns_the_call_when_answered(tmp_path):
+def test_ring_returns_the_call_once_answered_and_parked(tmp_path):
     async def go():
         fs, client, task = await connect(tmp_path)
-        fs.hooks.append(on_originate(lambda chan, h: [{"Event-Name": "CHANNEL_ANSWER", "Unique-ID": chan}]))
+        events = []
+        client.on_event(lambda e: events.append(e["Event-Name"]))
+        fs.hooks.append(on_originate(lambda chan, h: [
+            {"Event-Name": "CHANNEL_ANSWER", "Unique-ID": chan},
+            {"Event-Name": "CHANNEL_PARK", "Unique-ID": chan, "Call-Direction": "outbound"}]))
         call, why = await controller(client).ring(CALLER, "cj")
         task.cancel()
         fs.close()
-        return call, why, fs
-    call, why, fs = run(go())
+        return call, why, fs, events
+    call, why, fs, events = run(go())
     assert call is not None and why == "" and call.id.startswith("cj-")
+    # Ready only after the park: playing on a channel that's answered but not yet parked gets cut off.
+    assert events == ["CHANNEL_ANSWER", "CHANNEL_PARK"]
     (dial, _), = fs.sent("bgapi originate")
     assert "user/201@192.168.0.24 &park()" in dial
     assert "origination_caller_id_name='repo/main'" in dial and "sip_h_Alert-Info='<http://127.0.0.1>;info=Ring" in dial

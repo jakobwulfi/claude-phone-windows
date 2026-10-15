@@ -440,7 +440,8 @@ class Controller:
         """Ring the desk phone. Returns (answered call, '') or (None, why not). Caller holds self.line.
         auto_answer: an intercom call, which the phone picks up on the speaker without ringing."""
         chan_id, job_id = new_id(prefix), str(uuid.uuid4())
-        answered = self.esl.wait_for(lambda e: e.get("Event-Name") == "CHANNEL_ANSWER" and e.get("Unique-ID") == chan_id)
+        # Parked, not just answered: until the originate finishes and runs &park(), anything played is cut off.
+        answered = self.esl.wait_for(lambda e: e.get("Event-Name") == "CHANNEL_PARK" and e.get("Unique-ID") == chan_id)
         job = self.esl.wait_for(lambda e: e.get("Event-Name") == "BACKGROUND_JOB" and e.get("Job-UUID") == job_id)
         call = Call(self.esl, chan_id)
         cid = caller_id(c["label"], self.s.callerid_max)
