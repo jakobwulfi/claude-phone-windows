@@ -260,16 +260,56 @@ def cmd_meeting_test(a) -> None:
 def cmd_meetings(a) -> None:
     from datetime import datetime, timedelta
     from . import diary
-    s = config.load()
     if not diary.access():
-        print("Meeting alerts have no calendar source on Windows yet.")
+        print("No calendar link for calendar_sources yet: run `phone calendar add google` (or outlook).")
         return
-    print("calendars:", ", ".join(diary.calendars()))
-    print("used:", ", ".join(s.meeting_calendars) or "all")
     now = datetime.now().astimezone()
-    for m in diary.meetings(now, now + timedelta(days=2), s.meeting_calendars or None):
+    found = diary.meetings(now, now + timedelta(days=2))
+    print("calendars:", ", ".join(diary.calendars()) or "none could be read (see `phone calendar`)")
+    for m in found:
         title, text = diary.summary(m)
         print(f"{m.start:%a} {title} ({text.replace(chr(10), '; ')})")
+
+
+def cmd_calendar(a) -> None:
+    from . import diary
+    if a.action == "remove":
+        keychain.delete(f"calendar-{a.source}")
+        print(f"Removed the {a.source.capitalize()} calendar link.")
+    elif a.action == "add":
+        add_calendar(a.source)
+    else:
+        for st in diary.status():
+            parts = ["selected" if st["selected"] else "not selected", "link stored" if st["linked"] else "no link"]
+            if st["name"]:
+                parts.append(st["name"])
+            if st["fetched"]:
+                parts.append(f"read {st['fetched']:%H:%M}, {st['meetings']} meeting(s) in the coming days")
+            if st["error"]:
+                parts.append(f"can't be read: {st['error']}")
+            print(f"{st['source']:<8} " + "; ".join(parts))
+
+
+def add_calendar(source: str) -> None:
+    """The link is a secret: read without echo (or from a pipe), so it stays out of shell history and logs."""
+    import getpass
+    from . import diary
+    print(f"Paste the {source.capitalize()} calendar's secret ICS link (it won't be shown), then press Enter.")
+    raw = getpass.getpass("link: ") if sys.stdin.isatty() else sys.stdin.readline()
+    url = ""
+    try:
+        url = diary.normalise_url(raw)
+        name, count = diary.check(url)
+    except Exception as e:
+        sys.exit(f"Not saved: {diary.reason(e, url or raw.strip())}")
+    keychain.put(f"calendar-{source}", url)
+    print(f"Saved. {name or 'The calendar'} has {count} meeting(s) in the next two days.")
+    s = config.load()
+    if source not in [str(x).lower() for x in s.calendar_sources]:
+        print(f'Add "{source}" to calendar_sources in {config.CONFIG_FILE} to use it.')
+    if not s.meeting_alerts:
+        print(f"Set meeting_alerts = true in {config.CONFIG_FILE} to turn the alerts on.")
+    print("Then run: phone restart daemon")
 
 
 def cmd_say(a) -> None:
@@ -321,8 +361,15 @@ def main() -> None:
     sub.add_parser("voices", help="list the installed Windows voices").set_defaults(fn=cmd_voices)
     sub.add_parser("meeting-test", help="preview a meeting alert (whisper and screen)").set_defaults(fn=cmd_meeting_test)
     sub.add_parser("meetings", help="upcoming meetings the alerts will use").set_defaults(fn=cmd_meetings)
+    from . import diary
+    sp = sub.add_parser("calendar", help="the calendar feeds for meeting alerts: show, add or remove a link")
+    sp.add_argument("action", nargs="?", choices=["add", "remove"])
+    sp.add_argument("source", nargs="?", choices=diary.SOURCES)
+    sp.set_defaults(fn=cmd_calendar)
     sub.add_parser("config", help="regenerate FreeSWITCH config").set_defaults(fn=lambda a: render_freeswitch_config())
     a = p.parse_args()
+    if a.cmd == "calendar" and a.action and not a.source:
+        p.error(f"phone calendar {a.action} needs a source: {' or '.join(diary.SOURCES)}")
     a.fn(a)
 
 

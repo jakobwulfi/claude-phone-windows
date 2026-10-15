@@ -8,6 +8,8 @@ dependencies = ["aiohttp>=3.9", "mcp>=2.3,<3", "psutil>=5.9", "keyring>=25"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+# Meeting alerts from Google/Outlook calendar feeds. ~1.5 MB, pure Python; loaded only when a feed is read.
+calendar = ["icalendar>=7", "recurring-ical-events>=3.8", "tzdata"]
 
 [project.scripts]
 phone = "claude_phone.cli:main"

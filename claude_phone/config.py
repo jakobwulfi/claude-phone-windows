@@ -68,10 +68,13 @@ class Settings:
     screen_push: bool = False
     desk_ip: str = ""
     # Meeting alerts: a whisper and a screen warn_minutes before each meeting, and Claude's calls are held
-    # (voicemail, no pushes) from then until it ends. No calendar source on Windows yet, so they stay quiet.
+    # (voicemail, no pushes) from then until it ends. Meetings come from the calendar feeds (ICS) of the
+    # sources listed here; each feed's link is a secret stored with `phone calendar add google|outlook`.
     meeting_alerts: bool = False
     meeting_warn_minutes: int = 2
-    meeting_calendars: list = field(default_factory=list)
+    calendar_sources: list = field(default_factory=lambda: ["google"])  # "google", "outlook", or both
+    calendar_refresh_minutes: int = 5
+    calendar_email: str = ""  # your address, to skip meetings you declined; empty: the feed's name, if an address
     # The meeting whisper, played on the speaker without ringing. "elevenlabs_v3" acts out tags like "[whispers]".
     whisper_provider: str = "sapi"
     whisper_voice: str = ""

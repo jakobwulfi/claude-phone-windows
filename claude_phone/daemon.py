@@ -111,11 +111,11 @@ class Controller:
         """Every 15 s: whisper and show each meeting warn_minutes before it starts, and hold Claude's calls
         from then until it ends. No whisper while another meeting is under way."""
         if not await asyncio.to_thread(diary.access):
-            lg.warning("meeting alerts off: no calendar access (System Settings → Privacy & Security → Calendars)")
+            lg.warning("meeting alerts off: no calendar link (run `phone calendar add google`, then "
+                       "`phone restart daemon`)")
             return
         found = await asyncio.to_thread(diary.calendars)
-        lg.info("meeting alerts on: %s", ", ".join(c for c in found if not self.s.meeting_calendars
-                                                   or c in self.s.meeting_calendars) or "no matching calendars")
+        lg.info("meeting alerts on: %s", ", ".join(found) or "no calendar could be read yet (see `phone calendar`)")
         alerted: set[str] = set()
         while True:
             try:
@@ -126,7 +126,7 @@ class Controller:
 
     async def check_meetings(self, now: datetime, alerted: set[str]) -> None:
         warn = timedelta(minutes=self.s.meeting_warn_minutes)
-        ms = await asyncio.to_thread(diary.window, now, warn, self.s.meeting_calendars or None)
+        ms = await asyncio.to_thread(diary.window, now, warn)
         held = max(ms, key=lambda m: m.end) if ms else None
         if bool(held) != bool(self.meeting):
             lg.info("meeting window %s", f"until {held.end:%H:%M} ({held.title})" if held else "over")

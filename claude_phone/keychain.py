@@ -7,6 +7,7 @@ import os
 import secrets as _secrets
 
 import keyring
+from keyring.errors import PasswordDeleteError
 
 SERVICE = "claude-phone"
 
@@ -20,6 +21,13 @@ def get(name: str) -> str | None:
 
 def put(name: str, value: str) -> None:
     keyring.set_password(SERVICE, name, value)
+
+
+def delete(name: str) -> None:
+    try:
+        keyring.delete_password(SERVICE, name)
+    except PasswordDeleteError:
+        pass  # nothing stored
 
 
 def get_or_create(name: str, nbytes: int = 12) -> str:
