@@ -51,7 +51,8 @@ class Settings:
     ari_port: int = 8088
     daemon_port: int = 8765
     whisper_port: int = 8910
-    whisper_model: str = "ggml-large-v3-turbo-q5_0.bin"  # vs base.en on 23 real clips: same or better, 0.3 s each
+    # On a Ryzen 5 5500 CPU: ~1.8 s per answer. large-v3-turbo-q5_0 took ~8.4 s (fine with a GPU), base.en-q5_1 ~0.55 s.
+    whisper_model: str = "ggml-small.en-q5_1.bin"
     # Empty: whisper-server on PATH. Else the full path to whisper-server.exe.
     whisper_server: str = ""
     whisper_language: str = "en"  # "da", "auto", ...: needs a multilingual model (no ".en" in its name)

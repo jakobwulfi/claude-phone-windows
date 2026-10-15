@@ -24,8 +24,8 @@ you set them up.
 
 - Windows 10 or 11 and VS Code. Claude Code must run in **VS Code's terminal**: the Claude Code panel and the
   desktop app can't be typed into.
-- Python 3.12+, Node.js LTS (to build the extension), ffmpeg, whisper.cpp and FreeSWITCH. About 1 GB of disk for
-  the speech model.
+- Python 3.12+, Node.js LTS (to build the extension), ffmpeg, whisper.cpp and FreeSWITCH. About 200 MB of disk
+  for the speech model.
 - [Linphone](https://linphone.org) (free) as the phone while testing. A SIP desk phone later: the original was
   built on a Yealink T31P ([docs/t31p-setup.md](docs/t31p-setup.md)); a T30 should behave the same but is untested.
 - No accounts or subscriptions. ElevenLabs (nicer voices) and ntfy (missed-call pushes) are optional.
@@ -57,7 +57,8 @@ On any recording: `#` ends it, hanging up also ends it. In voicemail: `#` during
    attached to the build tag published next to each version (for v1.9.5: `b5454`). Take
    `whisper-blas-bin-x64.zip` (CPU) or a `cuda` build (NVIDIA), unzip it to `C:\tools\whisper` and add
    `C:\tools\whisper\Release` to PATH, or set `whisper_server` in config.toml to the full path of
-   `whisper-server.exe`. The first `phone up` downloads the speech model (~550 MB).
+   `whisper-server.exe`. The first `phone up` downloads the speech model (`small.en`, ~190 MB; about 2 s per
+   answer on a 6-core CPU, see `whisper_model` in config.example.toml for faster or more accurate ones).
 3. **FreeSWITCH:** being ported (Phase 4 of [docs/windows-port.md](docs/windows-port.md)).
 4. **Python:** `py -3.13 -m venv .venv`, then `.venv\Scripts\pip install -e .`
 5. **VS Code extension:**

@@ -16,7 +16,8 @@ operator_voice = "Microsoft Zira Desktop"
 
 # Speech to text
 # whisper_server = 'C:\tools\whisper\Release\whisper-server.exe'  # default: whisper-server on PATH
-# whisper_model = "ggml-large-v3-turbo-q5_0.bin"  # smaller and faster on a slow CPU: "ggml-base.en.bin"
+# whisper_model = "ggml-small.en-q5_1.bin"  # ~2 s per answer on a 6-core CPU; "ggml-base.en-q5_1.bin" is ~4x faster,
+#                                           # "ggml-large-v3-turbo-q5_0.bin" more accurate but ~8 s without a GPU
 # whisper_language = "en"     # other languages need a multilingual model (no ".en" in its name)
 
 # Per-repo voices
