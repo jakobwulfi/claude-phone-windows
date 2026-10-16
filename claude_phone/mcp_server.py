@@ -1,14 +1,17 @@
-"""stdio MCP server exposing call_<owner>, notify_<owner> and transfer_call. One instance per Claude Code session; the calling
-session is identified by CLAUDE_CODE_SESSION_ID in the env and by the VS Code terminal this process runs under."""
+"""stdio MCP server exposing call_<owner>, notify_<owner>, transfer_call and the settings tools. One instance per Claude
+Code session; the calling session is identified by CLAUDE_CODE_SESSION_ID in the env and by the VS Code terminal this
+process runs under."""
 
 from __future__ import annotations
 
+import asyncio
 import os
+from typing import Literal
 
 import aiohttp
 from mcp.server.mcpserver import MCPServer
 
-from . import config, inject
+from . import config, configedit, inject
 
 mcp = MCPServer("claude-phone")
 
@@ -116,10 +119,62 @@ async def transfer_call(to: str, reason: str, handover: str | None = None, from_
     return f"The transfer didn't connect (reason: {res.get('reason')}). Tell {S.owner} on screen which session to use."
 
 
+async def phone_settings(key: str | None = None) -> str:
+    """Show claude-phone's settings that {owner} can change, or explain one of them.
+
+    Use when {owner} asks about a phone setting: which calendars the meeting alerts read, whether they're on, how
+    many minutes before a meeting the warning comes, the caller ID length, their name, how long Claude's calls ring,
+    or what the meeting whisper says.
+
+    Args:
+        key: One setting's name (e.g. "meeting_warn_minutes"). Leave it out to list them all.
+    """
+    try:
+        if key:
+            return await asyncio.to_thread(configedit.get, key)
+        return await asyncio.to_thread(configedit.show)
+    except Exception as e:  # a bad key, or a config.toml that can't be read
+        text = str(e)
+        return f"{text[:1].upper()}{text[1:]}."
+
+
+async def change_phone_setting(key: str, value: str) -> str:
+    """Change one of claude-phone's settings in its config file. Only when {owner} has asked for this change.
+
+    The settings: calendar_sources (google, outlook or both, comma-separated), meeting_alerts (on/off),
+    meeting_warn_minutes (1-30), callerid_max (10-40), owner_name, ring_seconds (10-40) and whisper_text (what the
+    meeting whisper says). Nothing is restarted: tell {owner} the result, including what needs restarting.
+
+    Args:
+        key: The setting's name, e.g. "meeting_warn_minutes".
+        value: The new value as text, e.g. "3", "on", "google,outlook".
+    """
+    try:
+        return await asyncio.to_thread(configedit.set_value, key, value)
+    except Exception as e:
+        return f"Not changed: {e}."
+
+
+async def change_phone(phone: Literal["desk", "softphone"] | None = None) -> str:
+    """Choose which phone Claude's calls ring: "desk" (the desk phone) or "softphone" (e.g. Linphone on the PC).
+
+    Leave phone out to report which one rings now and whether it's registered. Switch only when {owner} asks.
+    Nothing is restarted: tell {owner} the result, including what needs restarting.
+
+    Args:
+        phone: "desk" or "softphone"; leave it out to just check.
+    """
+    try:
+        return await asyncio.to_thread(configedit.change_phone, phone)
+    except Exception as e:
+        return f"Not changed: {e}."
+
+
 # Tool names and descriptions carry the owner's name: call_sam, notify_sam for owner_name = "Sam".
 S = config.load()
 for fn, name in ((call_owner, f"call_{S.owner_slug}"), (notify_owner, f"notify_{S.owner_slug}"),
-                 (transfer_call, "transfer_call")):
+                 (transfer_call, "transfer_call"), (phone_settings, "phone_settings"),
+                 (change_phone_setting, "change_phone_setting"), (change_phone, "change_phone")):
     mcp.add_tool(fn, name=name, description=fn.__doc__.format(owner=S.owner_name, slug=S.owner_slug))
 
 

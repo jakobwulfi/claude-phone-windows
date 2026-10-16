@@ -897,6 +897,8 @@ async def main() -> None:
     book_runner = web.AppRunner(book)
     await book_runner.setup()
     lg.info("daemon up on 127.0.0.1:%s, ringing %s", c.s.daemon_port, c.s.ring_ext)
+    if unknown := config.unknown_keys():
+        lg.warning("%s: ignoring unknown settings (typos?): %s", config.CONFIG_FILE, ", ".join(unknown))
     asyncio.create_task(serve_phonebook(book_runner, c.s))
     await asyncio.Event().wait()
 

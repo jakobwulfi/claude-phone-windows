@@ -344,11 +344,45 @@ def add_calendar(source: str) -> None:
     keychain.put(f"calendar-{source}", url)
     print(f"Saved. {name or 'The calendar'} has {count} meeting(s) in the next two days.")
     s = config.load()
-    if source not in [str(x).lower() for x in s.calendar_sources]:
-        print(f'Add "{source}" to calendar_sources in {config.CONFIG_FILE} to use it.')
+    chosen = [str(x).lower() for x in s.calendar_sources]
+    if source not in chosen:
+        print(f"To use it: phone config set calendar_sources {', '.join([*chosen, source])}")
     if not s.meeting_alerts:
-        print(f"Set meeting_alerts = true in {config.CONFIG_FILE} to turn the alerts on.")
+        print("To turn the alerts on: phone config set meeting_alerts on")
     print("Then run: phone restart daemon")
+
+
+def cmd_config(a) -> None:
+    from . import configedit
+    if a.action == "render":
+        render_freeswitch_config()
+        print(f"FreeSWITCH config written to {config.FREESWITCH_CONF}. Run `phone restart freeswitch` to use it.")
+        return
+    if a.action in ("get", "set", "unset") and not a.key:
+        sys.exit(f"Usage: phone config {a.action} <setting>" + (" <value>" if a.action == "set" else ""))
+    if a.action == "set" and not a.value:
+        sys.exit("Usage: phone config set <setting> <value>")
+    if (a.action != "set" and a.value) or (not a.action and a.key):
+        sys.exit("Usage: phone config [get <setting> | set <setting> <value> | unset <setting> | render]")
+    try:
+        if a.action == "get":
+            print(configedit.get(a.key))
+        elif a.action == "set":
+            print(configedit.set_value(a.key, " ".join(a.value)))
+        elif a.action == "unset":
+            print(configedit.unset(a.key))
+        else:
+            print(configedit.show())
+    except ValueError as e:
+        sys.exit(f"Not changed: {e}" if a.action in ("set", "unset") else str(e))
+
+
+def cmd_change_phone(a) -> None:
+    from . import configedit
+    try:
+        print(configedit.change_phone(a.phone))
+    except ValueError as e:
+        sys.exit(f"Not changed: {e}")
 
 
 def cmd_say(a) -> None:
@@ -362,7 +396,7 @@ def cmd_voices(a) -> None:
         print(line)
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     # Windows error messages come in the system language (æøå), which a console's code page may not cover.
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(errors="replace")
@@ -405,8 +439,17 @@ def main() -> None:
     sp.add_argument("action", nargs="?", choices=["add", "remove"])
     sp.add_argument("source", nargs="?", choices=diary.SOURCES)
     sp.set_defaults(fn=cmd_calendar)
-    sub.add_parser("config", help="regenerate FreeSWITCH config").set_defaults(fn=lambda a: render_freeswitch_config())
-    a = p.parse_args()
+    sp = sub.add_parser("config", help="show or change settings: config [get|set|unset] <setting> [value]; "
+                        "config render rewrites the FreeSWITCH config")
+    sp.add_argument("action", nargs="?", choices=["get", "set", "unset", "render"])
+    sp.add_argument("key", nargs="?")
+    sp.add_argument("value", nargs="*")
+    sp.set_defaults(fn=cmd_config)
+    sp = sub.add_parser("change_phone", aliases=["change-phone"],
+                        help="which phone Claude's calls ring: desk or softphone (none: show)")
+    sp.add_argument("phone", nargs="?", choices=["desk", "softphone"], type=str.lower)
+    sp.set_defaults(fn=cmd_change_phone)
+    a = p.parse_args(argv)
     if a.cmd == "calendar" and a.action and not a.source:
         p.error(f"phone calendar {a.action} needs a source: {' or '.join(diary.SOURCES)}")
     a.fn(a)

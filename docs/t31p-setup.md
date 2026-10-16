@@ -86,9 +86,8 @@ testing, so this is the first real check of the light.)
 ## 10. Test, and make the desk phone the one that rings
 
 1. Lift the handset and dial **600**: you should hear yourself (echo test).
-2. On the PC, set `ring_ext = "200"` in `~/.claude-phone/config.toml` (or remove the line; 200 is the default) and
-   run `phone restart daemon`. From now on `call_<name>` rings the desk phone instead of Linphone. Linphone can stay
-   registered as 201 for dialling in; turn its auto-answer off.
+2. On the PC, run `phone change_phone desk`, then `phone restart daemon`. From now on `call_<name>` rings the desk
+   phone instead of Linphone. Linphone can stay registered as 201 for dialling in; turn its auto-answer off.
 3. Dial **500**: you hear the voicemail menu.
 4. Run through the call flows once more on the desk phone: dial a session (301), let Claude call you, voicemail,
    operator (0), all-hands (9).

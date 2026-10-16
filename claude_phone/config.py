@@ -6,7 +6,7 @@ import os
 import re
 import socket
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 import psutil
@@ -117,13 +117,23 @@ class Settings:
         return f"http://127.0.0.1:{self.whisper_port}"
 
 
+def _read() -> dict:
+    # UTF-8 whatever the console's code page: names may hold æøå.
+    return tomllib.loads(CONFIG_FILE.read_text(encoding="utf-8")) if CONFIG_FILE.exists() else {}
+
+
+def unknown_keys() -> list[str]:
+    """Keys in config.toml that aren't settings (typos); load() ignores them."""
+    known = {f.name for f in fields(Settings)}
+    return sorted(k for k in _read() if k not in known)
+
+
 def load() -> Settings:
     s = Settings()
-    if CONFIG_FILE.exists():
-        data = tomllib.loads(CONFIG_FILE.read_text())
-        for k, v in data.items():
-            if hasattr(s, k):
-                setattr(s, k, v)
+    known = {f.name for f in fields(Settings)}
+    for k, v in _read().items():
+        if k in known:
+            setattr(s, k, v)
     s.message_seconds = min(max(int(s.message_seconds), MESSAGE_SECONDS_MIN), MESSAGE_SECONDS_MAX)
     if not s.lan_ip:
         s.lan_ip = detect_lan_ip() or ""

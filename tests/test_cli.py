@@ -1,7 +1,9 @@
-"""The `phone` command line: how services are started."""
+"""The `phone` command line: starting services and changing settings."""
 
 import os
 import subprocess
+
+import pytest
 
 from claude_phone import cli, config
 
@@ -57,3 +59,48 @@ def test_audio_usage_counts_recordings_and_speech(monkeypatch, tmp_path):
     (tmp_path / "sounds" / "tts" / "b.wav").write_bytes(bytes(600_000))
     (tmp_path / "sounds" / "beep.wav").write_bytes(bytes(100))  # fixed sounds aren't counted
     assert cli.audio_usage() == "2 files, 2.1 MB (recordings 1, speech 1)"
+
+
+@pytest.fixture
+def settings_file(monkeypatch):
+    from claude_phone import configedit
+    path = config.CONFIG_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('# mine\nring_ext = "201"\n', encoding="utf-8")
+    monkeypatch.setattr(configedit, "_registered", lambda ext: "registered")
+    yield path
+    path.unlink(missing_ok=True)
+
+
+def test_phone_config_lists_gets_sets_and_unsets(settings_file, capsys):
+    cli.main(["config"])
+    assert "callerid_max = 17  (default)" in capsys.readouterr().out
+    cli.main(["config", "set", "whisper_text", "Psst.", "Meeting", "soon."])
+    assert capsys.readouterr().out.startswith('Saved: whisper_text = "Psst. Meeting soon.".')
+    cli.main(["config", "get", "whisper_text"])
+    assert capsys.readouterr().out.startswith("whisper_text = Psst. Meeting soon. (set in config.toml")
+    cli.main(["config", "unset", "whisper_text"])
+    assert "back to the default" in capsys.readouterr().out
+    assert settings_file.read_text(encoding="utf-8") == '# mine\nring_ext = "201"\n'
+
+
+def test_phone_config_refuses_bad_values_with_a_message(settings_file):
+    with pytest.raises(SystemExit, match="Not changed: must be from 10 to 40"):
+        cli.main(["config", "set", "callerid_max", "41"])
+    with pytest.raises(SystemExit, match="Usage: phone config set <setting> <value>"):
+        cli.main(["config", "set", "callerid_max"])
+
+
+def test_phone_config_render_rewrites_the_freeswitch_config(monkeypatch, capsys):
+    rendered = []
+    monkeypatch.setattr(cli, "render_freeswitch_config", lambda: rendered.append(True))
+    cli.main(["config", "render"])
+    assert rendered == [True] and "phone restart freeswitch" in capsys.readouterr().out
+
+
+def test_change_phone_with_either_spelling(settings_file, capsys):
+    cli.main(["change_phone"])
+    assert "softphone (ext 201)" in capsys.readouterr().out
+    cli.main(["change-phone", "DESK"])
+    assert "will ring the desk phone (ext 200)" in capsys.readouterr().out
+    assert 'ring_ext = "200"' in settings_file.read_text(encoding="utf-8")

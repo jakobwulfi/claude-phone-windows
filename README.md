@@ -145,13 +145,14 @@ calendars counts once. Times come from each event's own time zone and are shown 
      link. Some work accounts don't allow publishing.
 3. Run `phone calendar add google` (or `outlook`) in your own terminal and paste the link. The link is a password
    (anyone with it can read your calendar), so it's kept in Credential Manager and never shown or logged.
-4. In config.toml:
-   ```toml
-   meeting_alerts = true
-   calendar_sources = ["google"]   # or ["outlook"], or both
-   # calendar_email = "you@example.com"  # to skip meetings you declined, if your calendar isn't named after it
+4. Turn the alerts on and pick the calendars (or ask Claude to; see [Settings](#settings)):
+   ```powershell
+   phone config set meeting_alerts on
+   phone config set calendar_sources google      # or outlook, or google,outlook
+   phone restart daemon
    ```
-   Then run `phone restart daemon`.
+   If your calendar isn't named after your address, set `calendar_email = "you@example.com"` in config.toml so
+   meetings you declined are skipped.
 
 `phone meetings` lists the next two days as the alerts see them, and `phone calendar` shows each feed's state.
 Feeds are re-read every `calendar_refresh_minutes` (default 5). Google and Outlook also take a while to update
@@ -182,6 +183,35 @@ Get-Content -Wait $HOME\.claude-phone\logs\phone.log   # calls, transcripts, eve
 
 `phone` is `.venv\Scripts\phone.exe`.
 
+## Settings
+
+Everything lives in `%USERPROFILE%\.claude-phone\config.toml` (see `config.example.toml`). The everyday ones can
+also be changed without opening it, in three ways:
+
+| Setting | What | Allowed |
+|---|---|---|
+| `calendar_sources` | which calendars the meeting alerts read | `google`, `outlook`, or both |
+| `meeting_alerts` | warn before meetings, hold Claude's calls during them | on / off |
+| `meeting_warn_minutes` | how long before a meeting the warning comes | 1-30 |
+| `callerid_max` | the longest caller ID (repo/branch) shown on the phone | 10-40 |
+| `owner_name` | your name, spoken on calls and used in the tool names (`call_<name>`) | up to 40 characters |
+| `ring_seconds` | how long Claude's calls ring before voicemail | 10-40 (ring + answer must fit in 90 s) |
+| `whisper_text` | what the meeting whisper says | up to 120 characters |
+
+- **Command line:** `phone config` lists them with their values; `phone config get <setting>`,
+  `phone config set <setting> <value>`, `phone config unset <setting>` (back to the default).
+- **Slash command:** `/claude-phone config …` with the same words, e.g. `/claude-phone config set callerid_max 30`.
+- **Chat:** ask Claude, e.g. "warn me 3 minutes before meetings". It uses the `change_phone_setting` tool, which
+  Claude Code asks you to allow.
+
+**Which phone rings:** `phone change_phone desk` or `phone change_phone softphone` (also
+`/claude-phone change_phone …`, or ask Claude); `phone change_phone` alone shows which one rings now.
+
+Nothing restarts by itself. Each change says what it needs: usually `phone restart daemon`; a new `owner_name`
+also renames the tools, which Claude Code sessions pick up when they're started again. Comments and the order of
+config.toml are kept. Settings that aren't recognised (typos) are listed by `phone config` and logged when the
+daemon starts.
+
 ## Files
 
 | Path | What |
@@ -189,7 +219,7 @@ Get-Content -Wait $HOME\.claude-phone\logs\phone.log   # calls, transcripts, eve
 | `~/.claude-phone/registry.db` | sessions, voicemails, injection log (SQLite) |
 | `~/.claude-phone/logs/phone.log` | the log to tail |
 | `~/.claude-phone/logs/{freeswitch,whisper,daemon}.out` | process output |
-| `~/.claude-phone/freeswitch/` | generated FreeSWITCH config (from `freeswitch/freeswitch.xml.tmpl`, `phone config`), its log and database |
+| `~/.claude-phone/freeswitch/` | generated FreeSWITCH config (from `freeswitch/freeswitch.xml.tmpl` by `phone up` or `phone config render`), its log and database |
 | `~/.claude-phone/recordings/` | what was said on calls: deleted once transcribed; kept 1 day if transcription failed or heard nothing |
 | `~/.claude-phone/bridges/` | one file per VS Code window: how the daemon reaches its terminals |
 | `~/.claude-phone/sounds/` | hold music, the beep, and `tts/`: Claude's speech, cached 7 days (a waiting voicemail's question is kept until answered). `phone status` shows the audio's size |
