@@ -7,8 +7,9 @@ softphone_ext = "201"   # Linphone
 ring_ext = "200"        # what call_<name> rings; "201" while testing on Linphone
 # sip_port = 5070       # with Linphone on this PC (it holds 5060); Linphone's domain is then <lan_ip>:5070
 voicemail_ext = "500"
-ring_seconds = 25       # keep ring + record + transcribe under Claude Code's 120 s auto-background
-record_seconds = 60
+ring_seconds = 25       # keep ring_seconds + record_seconds <= 90 (Claude Code's 120 s limit for MCP calls)
+record_seconds = 60     # answers to Claude's calls
+message_seconds = 300   # messages you dial in (sessions, all-hands, voicemail replies), 30-600
 callerid_max = 18
 tts_provider = "sapi"   # Windows voices, or "elevenlabs" (ELEVENLABS_API_KEY or Credential Manager claude-phone/elevenlabs)
 sapi_voice = ""         # empty: the Windows default voice. `phone voices` lists the installed ones

@@ -26,6 +26,7 @@ LOG_FILE = LOGS / "phone.log"
 # One file per VS Code window, written by the claude-phone extension: how to reach that window's terminals.
 BRIDGES = HOME / "bridges"
 CONFIG_FILE = HOME / "config.toml"
+MESSAGE_SECONDS_MIN, MESSAGE_SECONDS_MAX = 30, 600
 
 
 @dataclass
@@ -59,7 +60,12 @@ class Settings:
     whisper_server: str = ""
     whisper_language: str = "en"  # "da", "auto", ...: needs a multilingual model (no ".en" in its name)
     ring_seconds: int = 25
+    # Answers to Claude's call_<owner> questions. The whole call (ring + question + answer + transcription) must end
+    # within Claude Code's 120 s limit for MCP calls, so keep ring_seconds + record_seconds <= 90.
     record_seconds: int = 60
+    # Messages you dial in with (a session, all-hands, a voicemail reply), kept within MESSAGE_SECONDS_MIN-MAX.
+    # Nothing waits on these, so they can run long; whisper takes ~25 s for 5 minutes on a 6-core CPU.
+    message_seconds: int = 300
     callerid_max: int = 17  # T31P shows 17 chars before scrolling (tested 2026-10-09)
     tts_provider: str = "sapi"
     sapi_voice: str = ""  # empty: the Windows default voice
@@ -118,6 +124,7 @@ def load() -> Settings:
         for k, v in data.items():
             if hasattr(s, k):
                 setattr(s, k, v)
+    s.message_seconds = min(max(int(s.message_seconds), MESSAGE_SECONDS_MIN), MESSAGE_SECONDS_MAX)
     if not s.lan_ip:
         s.lan_ip = detect_lan_ip() or ""
     if s.lan_ip and not s.lan_cidr:

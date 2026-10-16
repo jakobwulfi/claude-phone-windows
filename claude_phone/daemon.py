@@ -344,7 +344,7 @@ class Controller:
         greeting = await tts.render_async(tts.PHRASES["connected"].format(label=tts.spoken_label(sess.label)), sess.repo)
         await call.play(greeting, tts.beep())
         name = f"in-{ext}-{int(time.time())}"
-        ended, d = await call.record(name, self.s.record_seconds)
+        ended, d = await call.record(name, self.s.message_seconds)
         lg.info("dial-in %s recording ended: %s %s", ext, ended, d or "")
         text = await self.transcribe(name)
         if text is None:
@@ -419,7 +419,7 @@ class Controller:
         intro = await tts.render_async(tts.PHRASES["allhands_intro"].format(n=n, sessions="session" if n == 1 else "sessions"))
         await call.play(intro, tts.beep())
         name = f"all-{int(time.time())}"
-        ended, d = await call.record(name, self.s.record_seconds)
+        ended, d = await call.record(name, self.s.message_seconds)
         lg.info("all-hands recording ended: %s %s", ended, d or "")
         text = await self.transcribe(name)
         if not text:
@@ -729,7 +729,7 @@ class Controller:
                 continue
             name = f"vm-{vm.id}-{int(time.time())}"
             try:
-                ended, d = await call.record(name, self.s.record_seconds, terminate_on="any")
+                ended, d = await call.record(name, self.s.message_seconds, terminate_on="any")
             except Hangup:
                 ended, d = "hangup", None
             lg.info("voicemail %s recording ended: %s %s", vm.id, ended, d or "")

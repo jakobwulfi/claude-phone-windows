@@ -223,6 +223,31 @@ def test_record_with_a_silence_limit_and_no_digit_finishes(tmp_path):
     assert result == ("finished", None)
     (_, headers), = fs.sent("sendmsg")
     assert headers["execute-app-arg"].endswith(f" 10 {esl.SILENCE_THRESHOLD} 2")
+    assert fs.sent("api uuid_displace") == []  # too short for a warning
+
+
+def test_record_beeps_shortly_before_the_limit(tmp_path, monkeypatch):
+    monkeypatch.setattr(esl, "RECORD_WARN_S", 59.9)  # warn 0.1 s into a 60 s recording
+    record = {}
+
+    def hook(first, headers):
+        if first.startswith("sendmsg") and headers.get("execute-app-name") == "record":
+            record.update(headers)
+        if first.startswith("api uuid_displace"):  # the caller heard the warning; now the time runs out
+            return [complete(record)]
+        return []
+
+    async def go():
+        fs, client, task = await connect(tmp_path)
+        fs.hooks.append(hook)
+        result = await esl.Call(client, CHANNEL).record("in-301-2", 60)
+        task.cancel()
+        fs.close()
+        return result, fs
+    result, fs = run(go())
+    assert result == ("finished", None)
+    (cmd, _), = fs.sent("api uuid_displace")
+    assert cmd == f"api uuid_displace {CHANNEL} start {esl.TIME_UP_TONE} 0 mux"
 
 
 def test_reconnects_after_freeswitch_restarts(tmp_path, monkeypatch):
@@ -327,3 +352,22 @@ def test_call_stats_marks_missing_values_and_skips_legs_without_media():
     no_media = {k: v for k, v in HANGUP_COMPLETE.items() if "rtp_audio" not in k}
     assert daemon.call_stats(no_media) is None
     assert daemon.call_stats({**HANGUP_COMPLETE, "Event-Name": "CHANNEL_HANGUP"}) is None
+
+
+@pytest.mark.parametrize("ending", ["digit", "hangup"])
+def test_a_recording_that_ends_early_never_beeps(tmp_path, monkeypatch, ending):
+    monkeypatch.setattr(esl, "RECORD_WARN_S", 59.8)  # the beep would come 0.2 s in
+    events = {"digit": lambda h: [complete(h, variable_playback_terminator_used="#")],
+              "hangup": lambda h: [{"Event-Name": "CHANNEL_HANGUP", "Unique-ID": CHANNEL}]}
+
+    async def go():
+        fs, client, task = await connect(tmp_path)
+        fs.hooks.append(on_execute("record", events[ending]))
+        result = await esl.Call(client, CHANNEL).record("in-301-3", 60)
+        await asyncio.sleep(0.4)
+        task.cancel()
+        fs.close()
+        return result, fs
+    result, fs = run(go())
+    assert result[0] == ending
+    assert fs.sent("api uuid_displace") == []

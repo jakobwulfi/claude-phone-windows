@@ -64,8 +64,20 @@ daemon checks the end of the transcript before holding a call and when listing s
 
 ## 5. Timeouts
 
-Claude Code moves MCP calls that run longer than 120 s to the background
-(`CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS`). The budget is ring 25 s + answer 60 s + transcription about 2 s.
+There are two recording limits.
+
+- **Answers to Claude's call (`record_seconds`, 60 s).** Claude Code moves MCP calls that run longer than 120 s to
+  the background (`CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS`), and `call_<owner>`'s client gives up at 115 s. The budget is
+  ring 25 s + question ~5-10 s + answer 60 s + transcription ~5 s, so keep `ring_seconds + record_seconds` at 90 or
+  less. Longer answers would need that Claude Code setting raised.
+- **Messages you dial in (`message_seconds`, 5 min).** Dial-in, all-hands and voicemail replies are typed into
+  sessions afterwards, so no tool call waits on them. Transcription is what limits them: ~5 s per minute of audio
+  with `small.en` on a 6-core CPU (5 minutes took ~27 s), and the whisper timeout grows with the recording. The
+  caller hears silence while it runs. Hanging up after # is fine, as the message is still sent. The line counts as
+  busy until then.
+- Recordings of at least 30 s get a double beep 10 s before the cut: `uuid_displace … mux` mixes a tone into what
+  the caller hears without stopping `record`. `record` takes only the caller's side, but a speakerphone's mic can
+  pick the beep up, so `stt` drops whisper's sound tags (`[BEEP]`, `(beeping)`) from transcripts.
 
 ## 6. Windows details
 

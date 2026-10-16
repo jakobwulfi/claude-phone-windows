@@ -14,12 +14,14 @@ class FakeCall:
         self.played = []
         self.digits = list(digits)  # what each interruptible play returns
         self.recordings = list(recordings)
+        self.limits = []  # max_seconds of each recording
 
     async def play(self, *media, interrupt="", until=None):
         self.played.extend(media)
         return self.digits.pop(0) if interrupt and self.digits else None
 
     async def record(self, name, max_seconds, terminate_on="#", max_silence=None):
+        self.limits.append(max_seconds)
         return self.recordings.pop(0) if self.recordings else ("finished", None)
 
     def drain_digits(self):
@@ -79,6 +81,31 @@ def test_dial_in_types_what_was_said(ctl):
     assert run(ctl.dial_session(call, 301)) == "What colour should the button be?"
     assert ctl.typed == [(301, "What colour should the button be?")]
     assert "tts:Sent." in call.played
+
+
+def test_messages_get_the_long_limit_and_answers_the_short_one(ctl, monkeypatch):
+    ctl.s.message_seconds, ctl.s.record_seconds = 300, 60
+    registry.register("s", "repo", "main", None, "/r", "tab")
+    dial_in, all_hands, reply = FakeCall(), FakeCall(), FakeCall()
+    ctl.heard = ["One.", "Two.", "Three."]
+    run(ctl.dial_session(dial_in, 301))
+    run(ctl.all_hands(all_hands))
+    registry.add_voicemail("s", 301, "repo/main", "Ship?", None, None)
+    run(ctl.voicemail(reply))
+    assert dial_in.limits == all_hands.limits == reply.limits == [300]
+
+    answer = FakeCall()
+
+    async def online():
+        return True
+
+    async def ring(c, prefix):
+        return answer, ""
+    monkeypatch.setattr(ctl, "desk_online", online)
+    monkeypatch.setattr(ctl, "ring", ring)
+    ctl.heard = ["Yes."]
+    res = run(ctl.call_owner({"question": "Ship it", "session_id": "s", "term_id": "tab"}))
+    assert res == {"status": "answered", "answer": "Yes."} and answer.limits == [60]
 
 
 def test_dial_in_silence_sends_nothing(ctl):

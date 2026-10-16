@@ -14,6 +14,8 @@ macOS. [Watch the original in action](https://www.instagram.com/reel/DeY8JPmszXs
 - **Transfers:** `transfer_call` puts you through to another session when you ask the wrong one.
 - **You ring Claude:** every live session has an extension (301-399). Dial it, speak, hang up; the words are typed into that session's VS Code terminal and submitted.
 - **Voicemail:** unanswered questions light the message LED. Press Message, answer each one; answers are typed into the asking sessions.
+- **How long you can talk:** up to 5 minutes when you dial in (a session, all-hands or a voicemail reply), and up
+  to 60 s when answering Claude's call. A double beep warns you 10 s before the end; press # to finish early.
 
 Everything runs locally on one PC: FreeSWITCH (the phone exchange), whisper.cpp (speech to text), Windows voices
 or ElevenLabs (text to speech), a small Python daemon, and a VS Code extension that types into terminals. Your voice

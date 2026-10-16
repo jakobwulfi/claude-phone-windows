@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import array
+import asyncio
 import re
 import wave
 from pathlib import Path
@@ -11,6 +12,11 @@ import aiohttp
 
 from . import config, log, registry
 
+# Seconds whisper may take: a base, plus a share of the audio's length (5 minutes took ~27 s on a 6-core CPU).
+WHISPER_TIMEOUT_S = 30
+WHISPER_TIMEOUT_PER_AUDIO_S = 0.5
+# Sound tags whisper adds, like [BEEP] or (beeping): the time-up beep can echo into a speakerphone's mic.
+_TAGS = re.compile(r"\[[^\]]*\]|\([^)]*\)")
 # Phrases whisper produces from near-silence.
 _NOISE = re.compile(r"^\s*(\[[^\]]*\]|\([^)]*\)|thank you\.?|thanks for watching!?|you|\.+)?\s*$", re.I)
 
@@ -31,6 +37,19 @@ def speech_seconds(path: Path, threshold: int = 200) -> float:
         if rms > threshold:
             voiced += 1
     return voiced / 50
+
+
+def wav_seconds(path: Path) -> float:
+    """Length of a WAV from its header; 0 if it can't be read."""
+    try:
+        with wave.open(str(path), "rb") as w:
+            return w.getnframes() / w.getframerate()
+    except (wave.Error, EOFError, OSError):
+        return 0.0
+
+
+def whisper_timeout(path: Path) -> float:
+    return WHISPER_TIMEOUT_S + WHISPER_TIMEOUT_PER_AUDIO_S * wav_seconds(path)
 
 
 def wav_complete(path: Path) -> bool:
@@ -56,21 +75,21 @@ def vocabulary() -> str:
 async def transcribe(path: Path) -> str:
     """Returns the transcript, or '' when nothing was said."""
     lg = log.get("stt")
-    voiced = speech_seconds(path)
+    voiced = await asyncio.to_thread(speech_seconds, path)  # a long recording would block the daemon
     if voiced < 0.1:
         lg.info("no speech in %s (voiced %.2fs)", path.name, voiced)
         return ""
     s = config.load()
     form = aiohttp.FormData()
-    form.add_field("file", path.read_bytes(), filename="audio.wav", content_type="audio/wav")
+    form.add_field("file", await asyncio.to_thread(path.read_bytes), filename="audio.wav", content_type="audio/wav")
     form.add_field("response_format", "json")
     form.add_field("temperature", "0.0")
     form.add_field("prompt", vocabulary())
     async with aiohttp.ClientSession() as http:
-        async with http.post(f"{s.whisper_url}/inference", data=form, timeout=aiohttp.ClientTimeout(total=30)) as r:
+        async with http.post(f"{s.whisper_url}/inference", data=form, timeout=aiohttp.ClientTimeout(total=whisper_timeout(path))) as r:
             r.raise_for_status()
             text = (await r.json())["text"]
-    text = " ".join(text.split())
+    text = " ".join(_TAGS.sub(" ", text).split())
     if _NOISE.match(text):
         lg.info("discarded noise transcript %r", text)
         return ""

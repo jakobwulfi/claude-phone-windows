@@ -44,6 +44,17 @@ def test_speech_gate(tmp_path):
     assert stt.speech_seconds(tmp_path / "voice.wav") > 0.9
 
 
+def test_whisper_timeout_grows_with_the_recording(tmp_path):
+    _wav(tmp_path / "short.wav", 2, 800)
+    with wave.open(str(tmp_path / "long.wav"), "wb") as w:  # 5 minutes of silence, written in one go
+        w.setnchannels(1), w.setsampwidth(2), w.setframerate(16000)
+        w.writeframes(bytes(2 * 16000 * 300))
+    assert stt.wav_seconds(tmp_path / "long.wav") == 300
+    assert stt.whisper_timeout(tmp_path / "short.wav") == 31
+    assert stt.whisper_timeout(tmp_path / "long.wav") == 180
+    assert stt.whisper_timeout(tmp_path / "missing.wav") == 30
+
+
 def test_wav_complete_only_once_the_header_is_written(tmp_path):
     (tmp_path / "empty.wav").write_bytes(b"")
     (tmp_path / "partial.wav").write_bytes(b"RIFF\x00\x00\x00\x00WAVE")  # no fmt or data chunk yet
@@ -79,6 +90,39 @@ def test_transcribe_gives_up_on_a_missing_recording(tmp_path, monkeypatch):
     monkeypatch.setattr(daemon, "recording_path", lambda name: tmp_path / "gone.wav")
     monkeypatch.setattr(daemon, "RECORDING_WAIT", 0.2)
     assert asyncio.run(daemon.Controller.__new__(daemon.Controller).transcribe("gone")) == ""
+
+
+def test_sound_tags_are_dropped_from_transcripts(tmp_path, monkeypatch):
+    _wav(tmp_path / "voice.wav", 1, 800)
+
+    class Reply:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def raise_for_status(self):
+            pass
+
+        async def json(self):
+            return {"text": " Ship it on Friday. [BEEP] (beeping) "}
+
+    class Session(Reply):
+        def post(self, *a, **k):
+            return Reply()
+    monkeypatch.setattr(stt.aiohttp, "ClientSession", Session)
+    assert asyncio.run(stt.transcribe(tmp_path / "voice.wav")) == "Ship it on Friday."
+
+
+def test_message_seconds_stays_within_its_range():
+    from claude_phone import config
+    try:
+        for given, used in ((5, 30), (300, 300), (9000, 600)):
+            config.CONFIG_FILE.write_text(f"message_seconds = {given}")
+            assert config.load().message_seconds == used
+    finally:
+        config.CONFIG_FILE.unlink(missing_ok=True)
 
 
 def test_noise_transcripts_discarded():

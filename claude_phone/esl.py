@@ -21,6 +21,10 @@ COMMAND_TIMEOUT_S = 10
 RECONNECT_S = 2
 # Energy below which a frame counts as silence for `record`'s max_silence; line noise sits well under it.
 SILENCE_THRESHOLD = 200
+# Recordings of at least RECORD_WARN_MIN seconds get a double beep RECORD_WARN_S before they're cut off.
+RECORD_WARN_MIN = 30
+RECORD_WARN_S = 10
+TIME_UP_TONE = "tone_stream://L=2;%(150,100,880)"
 
 
 class Hangup(Exception):
@@ -323,6 +327,8 @@ class Call:
         path = (self.esl.recordings / f"{name}.wav").as_posix()
         arg = f"{path} {max_seconds}" + (f" {SILENCE_THRESHOLD} {max_silence}" if max_silence else "")
         finished = await self._execute("record", arg)
+        warn = (asyncio.create_task(self._warn_time_up(max_seconds - RECORD_WARN_S))
+                if max_seconds >= RECORD_WARN_MIN else None)
         try:
             ev = await self._race(finished, timeout=max_seconds + 5)
         except Hangup:
@@ -331,9 +337,22 @@ class Call:
         except asyncio.TimeoutError:
             await self._break()
             return "timeout", None
+        finally:
+            if warn:
+                warn.cancel()
         digit = None if self.digits.empty() else self.digits.get_nowait()
         digit = digit or ev.get("variable_playback_terminator_used") or None
         return ("digit", digit) if digit else ("finished", None)
+
+
+    async def _warn_time_up(self, delay: float) -> None:
+        """Mixes a double beep into what the caller hears. `record` keeps running and records only their side,
+        though a speakerphone's mic may pick the beep up (stt drops such tags)."""
+        await asyncio.sleep(delay)
+        try:
+            await self.esl.api(f"uuid_displace {self.id} start {TIME_UP_TONE} 0 mux")
+        except (ESLError, ConnectionError, asyncio.TimeoutError) as e:
+            self.esl.lg.info("time-up beep on %s failed: %r", self.id, e)
 
 
 def originate_vars(values: dict[str, str]) -> str:
