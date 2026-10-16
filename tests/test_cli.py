@@ -46,3 +46,14 @@ def test_spawn_without_extras_inherits_the_environment(monkeypatch, tmp_path):
     started = _spawn(monkeypatch, tmp_path, "daemon", cli.Service(lambda s: []))
     assert started["creationflags"] == cli.DETACHED
     assert started["env"] is None
+
+
+def test_audio_usage_counts_recordings_and_speech(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "RECORDINGS", tmp_path / "rec")
+    monkeypatch.setattr(config, "SOUNDS", tmp_path / "sounds")
+    (tmp_path / "rec").mkdir()
+    (tmp_path / "sounds" / "tts").mkdir(parents=True)
+    (tmp_path / "rec" / "a.wav").write_bytes(bytes(1_500_000))
+    (tmp_path / "sounds" / "tts" / "b.wav").write_bytes(bytes(600_000))
+    (tmp_path / "sounds" / "beep.wav").write_bytes(bytes(100))  # fixed sounds aren't counted
+    assert cli.audio_usage() == "2 files, 2.1 MB (recordings 1, speech 1)"

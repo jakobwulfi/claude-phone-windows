@@ -182,6 +182,25 @@ def cmd_restart(a) -> None:
     cmd_up(a)
 
 
+def _sizes(folder: Path) -> list[int]:
+    """Sizes of the files in a folder; the daemon may delete one while we look."""
+    sizes = []
+    for p in folder.glob("*") if folder.exists() else ():
+        try:
+            if p.is_file():
+                sizes.append(p.stat().st_size)
+        except FileNotFoundError:
+            pass
+    return sizes
+
+
+def audio_usage() -> str:
+    """Recordings and cached speech on disk; housekeeping keeps both small."""
+    rec, speech = _sizes(config.RECORDINGS), _sizes(config.SOUNDS / "tts")
+    return (f"{len(rec) + len(speech)} files, {(sum(rec) + sum(speech)) / 1e6:.1f} MB "
+            f"(recordings {len(rec)}, speech {len(speech)})")
+
+
 def cmd_status(a) -> None:
     w = config.ip_warning()
     if w:
@@ -189,6 +208,7 @@ def cmd_status(a) -> None:
     for n in SERVICES:
         pid = _pid(n)
         print(f"{n:9} {'running pid ' + str(pid) if pid else 'stopped'}")
+    print(f"{'audio':9} {audio_usage()}")
     try:
         with urllib.request.urlopen(f"{config.load().daemon_url}/health", timeout=3) as r:
             print("health   ", json.loads(r.read()))

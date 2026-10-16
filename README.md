@@ -190,9 +190,9 @@ Get-Content -Wait $HOME\.claude-phone\logs\phone.log   # calls, transcripts, eve
 | `~/.claude-phone/logs/phone.log` | the log to tail |
 | `~/.claude-phone/logs/{freeswitch,whisper,daemon}.out` | process output |
 | `~/.claude-phone/freeswitch/` | generated FreeSWITCH config (from `freeswitch/freeswitch.xml.tmpl`, `phone config`), its log and database |
-| `~/.claude-phone/recordings/` | what was said on calls, kept 30 days |
+| `~/.claude-phone/recordings/` | what was said on calls: deleted once transcribed; kept 1 day if transcription failed or heard nothing |
 | `~/.claude-phone/bridges/` | one file per VS Code window: how the daemon reaches its terminals |
-| `~/.claude-phone/sounds/` | TTS cache |
+| `~/.claude-phone/sounds/` | hold music, the beep, and `tts/`: Claude's speech, cached 7 days (a waiting voicemail's question is kept until answered). `phone status` shows the audio's size |
 
 ## Tests
 

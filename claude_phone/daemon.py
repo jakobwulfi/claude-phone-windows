@@ -447,11 +447,16 @@ class Controller:
             return ""
         try:
             text = await stt.transcribe(path)
-            lg.info("transcript %s: %r", name, text)
-            return text
         except Exception as e:
             lg.exception("transcription failed for %s: %r", name, e)
             return None
+        lg.info("transcript %s: %r", name, text)
+        if text:  # only the text is used from here; a silent or failed recording stays a day for checking
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as e:  # e.g. still open: housekeeping clears it within a day
+                lg.warning("couldn't delete recording %s: %r", path, e)
+        return text
 
     # --- Claude ringing me ---
 

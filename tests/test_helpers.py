@@ -3,6 +3,8 @@ import math
 import struct
 import wave
 
+import pytest
+
 from claude_phone import daemon, stt, tts
 from claude_phone.daemon import browser_xml, caller_id
 from claude_phone.config import Settings
@@ -169,3 +171,47 @@ def test_windows_speech_gets_the_text_outside_the_script(monkeypatch, tmp_path):
 def test_lan_addresses_leave_out_loopback():
     from claude_phone import config
     assert not any(ip.startswith("127.") for ip in config.current_lan_ips())
+
+
+@pytest.mark.parametrize("heard, kept", [("Ship it.", False), ("", True), (RuntimeError("whisper down"), True)])
+def test_a_recording_is_deleted_once_transcribed_and_kept_when_not(tmp_path, monkeypatch, heard, kept):
+    path = tmp_path / "in-301-1.wav"
+    _wav(path, 0.2, 800)
+    monkeypatch.setattr(daemon, "recording_path", lambda name: path)
+
+    async def transcribe(p):
+        if isinstance(heard, Exception):
+            raise heard
+        return heard
+    monkeypatch.setattr(stt, "transcribe", transcribe)
+    text = asyncio.run(daemon.Controller.__new__(daemon.Controller).transcribe("in-301-1"))
+    assert text == (None if isinstance(heard, Exception) else heard)
+    assert path.exists() == kept
+
+
+def test_reused_speech_counts_as_used_and_expired_speech_is_rendered_again(monkeypatch):
+    import os
+    from pathlib import Path
+    rendered = []
+    monkeypatch.setattr(tts.PROVIDERS["sapi"], "render", lambda text, voice, out: (rendered.append(text), out.write_bytes(b"x")))
+    path = Path(tts.render("Reuse me."))
+    os.utime(path, (0, 0))  # as if last used in 1970
+    assert tts.render("Reuse me.") == path.as_posix() and path.stat().st_mtime > 0 and rendered == ["Reuse me."]
+    path.unlink()  # housekeeping expired it
+    assert Path(tts.render("Reuse me.")).read_bytes() == b"x" and rendered == ["Reuse me.", "Reuse me."]
+
+
+def test_a_recording_that_cannot_be_deleted_still_delivers_the_text(tmp_path, monkeypatch):
+    from pathlib import Path
+    path = tmp_path / "in-301-2.wav"
+    _wav(path, 0.2, 800)
+    monkeypatch.setattr(daemon, "recording_path", lambda name: path)
+
+    async def transcribe(p):
+        return "Ship it."
+    monkeypatch.setattr(stt, "transcribe", transcribe)
+
+    def locked(self, missing_ok=False):
+        raise PermissionError(32, "being used by another process")
+    monkeypatch.setattr(Path, "unlink", locked)
+    assert asyncio.run(daemon.Controller.__new__(daemon.Controller).transcribe("in-301-2")) == "Ship it."

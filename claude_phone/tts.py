@@ -134,9 +134,12 @@ def render(text: str, repo: str | None = None, voice: tuple[str, str | None] | N
     key = hashlib.sha256(json.dumps([provider, voice, text]).encode()).hexdigest()[:20]
     base = config.SOUNDS / "tts" / key
     out = base.with_suffix(".wav")
-    if out.exists():
-        out.touch()  # housekeeping expires speech by last use
-    else:
+    try:
+        os.utime(out)  # housekeeping expires speech by last use
+        reused = True
+    except FileNotFoundError:  # not rendered yet, or just expired
+        reused = False
+    if not reused:
         out.parent.mkdir(parents=True, exist_ok=True)
         tmp = base.with_suffix(".tmp.wav")
         try:

@@ -12,16 +12,16 @@ def _file(path, age_days, size=10):
     return path
 
 
-def test_old_recordings_and_speech_expire_but_pending_question_kept():
+def test_kept_recordings_expire_after_a_day_and_speech_after_a_week_but_pending_question_kept():
     rec = config.RECORDINGS
-    old_rec, new_rec = _file(rec / "old.wav", 31), _file(rec / "new.wav", 1)
+    old_rec, new_rec = _file(rec / "old.wav", 1.1), _file(rec / "new.wav", 0.5)
     tts = config.SOUNDS / "tts"
-    old_tts, pending = _file(tts / "old.wav", 40), _file(tts / "pending.wav", 40)
+    old_tts, new_tts, pending = _file(tts / "old.wav", 8), _file(tts / "new.wav", 6), _file(tts / "pending.wav", 40)
     registry.add_voicemail("s", 301, "repo", "Q?", None, pending.as_posix())
     done = housekeeping.run()
     assert (done["recordings"], done["speech"]) == (1, 1)
     assert not old_rec.exists() and new_rec.exists()
-    assert not old_tts.exists() and pending.exists()
+    assert not old_tts.exists() and new_tts.exists() and pending.exists()
 
 
 def test_log_rotation(monkeypatch):
