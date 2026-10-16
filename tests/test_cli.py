@@ -51,6 +51,32 @@ def test_spawn_without_extras_inherits_the_environment(monkeypatch, tmp_path):
     assert started["env"] is None
 
 
+def _pid_file(monkeypatch, tmp_path, written_at: float) -> None:
+    """daemon.pid naming this test's own process, as if written at `written_at`."""
+    monkeypatch.setattr(cli, "RUN", tmp_path)
+    f = tmp_path / "daemon.pid"
+    f.write_text(str(os.getpid()))
+    os.utime(f, (written_at, written_at))
+
+
+def test_a_pid_counts_when_its_process_started_before_the_pid_file(monkeypatch, tmp_path):
+    _pid_file(monkeypatch, tmp_path, cli.psutil.Process().create_time() + 5)
+    assert cli._pid("daemon") == os.getpid()
+
+
+def test_a_pid_reused_after_a_reboot_is_not_the_service(monkeypatch, tmp_path):
+    # The PC restarted after the pid file was written, and another program got the same PID.
+    _pid_file(monkeypatch, tmp_path, cli.psutil.Process().create_time() - 3600)
+    assert cli._pid("daemon") is None
+
+
+def test_stop_leaves_a_process_that_reused_the_pid_alone(monkeypatch, tmp_path):
+    _pid_file(monkeypatch, tmp_path, cli.psutil.Process().create_time() - 3600)
+    monkeypatch.setattr(cli.psutil.Process, "terminate", lambda self: pytest.fail("terminated someone else's process"))
+    cli._stop("daemon")
+    assert not (tmp_path / "daemon.pid").exists()
+
+
 def test_audio_usage_counts_recordings_and_speech(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "RECORDINGS", tmp_path / "rec")
     monkeypatch.setattr(config, "SOUNDS", tmp_path / "sounds")

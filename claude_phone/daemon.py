@@ -12,8 +12,9 @@ from pathlib import Path
 
 from aiohttp import web
 
-from . import config, diary, hold, housekeeping, inject, keychain, log, push, registry, screen, stt, transcript, tts
-from .esl import ESL, Call, Hangup, new_id, originate_vars
+from . import (config, diary, hold, housekeeping, inject, keychain, log, push, registry, screen, stt, transcript, tts,
+               voiceworker)
+from .esl import ESL, IDLE_SILENCE, Call, Hangup, new_id, originate_vars
 
 lg = log.get("daemon")
 
@@ -23,6 +24,7 @@ ANSWER_PREFIX = "[Phone answer to your earlier question]"
 ALLHANDS_PREFIX = "[All-hands message from {owner}, sent to every session]"
 HOLD_MAX = 600  # seconds on hold before the message is taken anyway
 RECORDING_WAIT = 3.0  # seconds to wait after hangup for FreeSWITCH to finish writing the recording
+GREETING_RETRY_S = 600  # a session greeting that failed to render waits this long before it's tried again
 # Hangup causes that mean "didn't pick up": no answer, busy, DND (480/486/603), unreachable.
 NOT_ANSWERED = "not answered"
 # Missed-call reasons where a push would only repeat what the owner knows, or disturb a meeting.
@@ -114,6 +116,8 @@ class Controller:
         self.esl = ESL("127.0.0.1", self.s.esl_port, keychain.get_or_create("esl"), config.RECORDINGS)
         self.line = asyncio.Lock()  # one call with the owner at a time
         self.calls: dict[str, asyncio.Task] = {}
+        self.greeting_retry: dict[tuple[str, str], float] = {}  # (greeting, repo) -> when to try rendering again
+        self.warming: asyncio.Task | None = None  # warm_greetings, run from the sweeper
         self.registered: dict[str, bool] = {}  # phone extension -> registered, from sofia events
         self.meeting: diary.Meeting | None = None  # the meeting in (or about to start) that holds calls
         self.window: set[str] = set()  # keys of the meetings in the current window
@@ -208,6 +212,8 @@ class Controller:
                     lg.info("removed stale session ext=%s %s", s.ext, s.label)
             except Exception as e:
                 lg.warning("stale sweep failed: %r", e)
+            if self.warming is None or self.warming.done():  # in the background: it mustn't hold up the sweep
+                self.warming = asyncio.create_task(self.warm_greetings())
             if sweeps % 60 == 0:
                 try:
                     done = await asyncio.to_thread(housekeeping.run)
@@ -318,7 +324,7 @@ class Controller:
             hit, candidates = operator.match(heard, candidates)
             lg.info("operator heard %r -> %s (candidates %s)", heard, hit and hit.ext, [c.ext for c in candidates])
             if hit:
-                said = await tts.op_async(tts.OPERATOR["connecting"].format(label=tts.spoken_label(hit.label)))
+                said = await tts.op_async(tts.OPERATOR["connecting"].format(label=self.spoken_name(hit)))
                 await call.play(said)
                 await self.dial_session(call, hit.ext)
                 return
@@ -341,7 +347,7 @@ class Controller:
             await call.play(tts.phrase("no_session"))
             return
         await self.hold(call, sess)
-        greeting = await tts.render_async(tts.PHRASES["connected"].format(label=tts.spoken_label(sess.label)), sess.repo)
+        greeting = await tts.render_async(tts.PHRASES["connected"].format(label=self.spoken_name(sess)), sess.repo)
         await call.play(greeting, tts.beep())
         name = f"in-{ext}-{int(time.time())}"
         ended, d = await call.record(name, self.s.message_seconds)
@@ -399,7 +405,7 @@ class Controller:
         watcher = asyncio.create_task(watch())
         started = time.monotonic()
         try:
-            intro = await tts.op_async(tts.OPERATOR["hold"].format(label=tts.spoken_label(sess.label)))
+            intro = await tts.op_async(tts.OPERATOR["hold"].format(label=self.spoken_name(sess)))
             got = await call.play(intro, interrupt="#", until=free)
             music, important = await asyncio.to_thread(hold.render), tts.op(tts.OPERATOR["important"])
             while got is None and time.monotonic() - started < HOLD_MAX:
@@ -479,8 +485,7 @@ class Controller:
             repo, b, w = repo_info(body.get("cwd") or os.getcwd())
             branch = w or b
             label, ext, sid = (f"{repo}/{branch}" if branch else repo), None, body.get("session_id") or ""
-        # Spoken intro: just the repo, plus the branch only when it isn't the default one.
-        intro = tts.spoken_label(f"{repo}/{branch}" if branch and branch not in ("main", "master") else repo)
+        intro = self.spoken_name(sess) if sess else self.intro_for(repo, branch)
         if agent:
             label, intro = f"{label}@{agent}", f"{intro}, {agent}"
         return {"label": label, "ext": ext, "sid": sid, "repo": repo, "intro": intro}
@@ -495,6 +500,7 @@ class Controller:
         call = Call(self.esl, chan_id)
         cid = caller_id(c["label"], self.s.callerid_max)
         variables = {"origination_uuid": chan_id, "originate_timeout": str(self.s.ring_seconds),
+                     "send_silence_when_idle": IDLE_SILENCE,
                      "origination_caller_id_name": cid, "origination_caller_id_number": str(c["ext"] or "")}
         if auto_answer:
             variables |= {"sip_h_Alert-Info": "<http://127.0.0.1>;info=alert-autoanswer",
@@ -541,20 +547,78 @@ class Controller:
         text = (text or "").strip()
         return text if not text or text[-1] in ".?!" else text + "."
 
+    @staticmethod
+    def intro_for(repo: str, branch: str | None) -> str:
+        """The spoken intro: just the repo, plus the branch only when it isn't the default one."""
+        return tts.spoken_label(f"{repo}/{branch}" if branch and branch not in ("main", "master") else repo)
+
+    def spoken_name(self, sess: registry.Session) -> str:
+        """How a session is said on the phone: its intro, plus its extension while another live session would
+        sound the same (two sessions on one branch), so a transfer from one to the other makes sense."""
+        name = self.intro_for(sess.repo, sess.worktree or sess.branch)
+        twins = [x for x in registry.all_sessions() if x.session_id != sess.session_id
+                 and self.intro_for(x.repo, x.worktree or x.branch) == name]
+        return f"{name}, {sess.ext}" if twins else name
+
+    @staticmethod
+    def speech(c: dict, text: str) -> tts.Speech:
+        """The greeting as a part of its own, so it plays the moment the call is answered (warm_greetings has it
+        ready), and the rest a sentence at a time while it renders. Unless Piper or Kokoro isn't running: starting
+        it (loading the model) while the greeting played made the first sentence stutter on the softphone, so
+        then nothing plays until the engine is up and the first sentence is ready. It starts while the phone
+        rings, so that's mostly hidden."""
+        provider = tts.voice_for(c["repo"])[0]
+        cold = provider in ("piper", "kokoro") and not voiceworker.is_warm(provider)
+        return tts.Speech([f"{c['intro']}.", *tts.sentences(text)], c["repo"], start_after=2 if cold else 1)
+
+    async def say(self, call: Call, speech: tts.Speech, *after: str) -> None:
+        """Speech a part at a time, each as soon as it's rendered, then `after` (a beep, goodbye) with the last."""
+        left = len(speech.parts)
+        async for path in speech.files():
+            left -= 1
+            await call.play(path, *(() if left else after))
+        if not speech.parts and after:
+            await call.play(*after)
+
+    def whisper_voice(self) -> tuple[str, str | None] | None:
+        """whisper_provider/whisper_voice, or None for Claude's voice."""
+        provider = self.s.whisper_provider.strip().lower()
+        return (tts.ENGINE_ALIASES.get(provider, provider), self.s.whisper_voice or None) if provider else None
+
+    async def warm_greetings(self) -> None:
+        """Renders each live session's greeting ahead of its first call, and the meeting whisper (answered on the
+        speaker at once, so no ringing hides its rendering); a cached one is only touched. Without the Windows
+        voice standing in, so a broken engine shows, and is then left alone for a while: it would otherwise be
+        tried again every minute, holding up a call's speech behind it."""
+        wanted = [(f"{self.spoken_name(s)}.", s.repo, None, s.label) for s in registry.all_sessions()]
+        if self.s.meeting_alerts:
+            wanted += [(part, None, self.whisper_voice(), "the meeting whisper")
+                       for part in tts.sentences(self.s.whisper_text)]
+        now = time.monotonic()
+        for text, repo, voice, what in wanted:
+            key = (text, repo)
+            if self.greeting_retry.get(key, 0) > now:
+                continue
+            try:
+                await asyncio.to_thread(tts.render, text, repo, voice, False)
+            except Exception as e:
+                self.greeting_retry[key] = now + GREETING_RETRY_S
+                lg.warning("speech for %s not rendered ahead (tried again in %d min): %r", what,
+                           GREETING_RETRY_S // 60, e)
+
     async def call_owner(self, body: dict) -> dict:
         question = self.sentence(body.get("question"))
         context = self.sentence(body.get("context")) or None
         c = self.caller(body)
         label, ext, sid = c["label"], c["ext"], c["sid"]
         body["_label"] = label
-        script = f"{c['intro']}. " + (f"{context} " if context else "") + question
         lg.info("call_owner from %s ext=%s: %r", label, ext, question)
 
         # Speech renders while the phone rings.
-        speech = asyncio.create_task(tts.render_async(script, c["repo"]))
+        speech = self.speech(c, (f"{context} " if context else "") + question)
 
         async def to_voicemail(reason: str) -> dict:
-            audio = await speech
+            audio = await speech.whole()
             registry.add_voicemail(sid, ext, label, f"{context} {question}" if context else question, context, audio)
             await self.update_mwi()
             lg.info("voicemail left by %s (%s)", label, reason)
@@ -580,7 +644,7 @@ class Controller:
                 return await to_voicemail(why)
             name = f"cj-{call.id}"
             try:
-                await call.play(await speech, tts.beep())
+                await self.say(call, speech, tts.beep())
                 ended, digit = await call.record(name, self.s.record_seconds)
                 lg.info("call_owner recording ended: %s %s", ended, digit or "")
                 if call.up and ended == "digit":
@@ -604,7 +668,7 @@ class Controller:
         c = self.caller(body)
         body["_label"] = c["label"]
         lg.info("notify_owner from %s ext=%s: %r", c["label"], c["ext"], message)
-        speech = asyncio.create_task(tts.render_async(f"{c['intro']}. {message}", c["repo"]))
+        speech = self.speech(c, message)
 
         def missed(reason: str) -> dict:
             speech.cancel()
@@ -625,9 +689,10 @@ class Controller:
             if not call:
                 return missed(why)
             try:
-                await call.play(await speech, tts.phrase("goodbye"))
+                await self.say(call, speech, tts.phrase("goodbye"))
                 await call.hangup()
             except Hangup:
+                speech.cancel()  # the rest needn't render: it would hold up the next call's speech
                 lg.info("%s hung up during the notification", self.s.owner)
                 return {"status": "delivered", "note": f"{self.s.owner} hung up before the end"}
             finally:
@@ -637,7 +702,7 @@ class Controller:
     async def whisper(self, text: str, label: str) -> str:
         """Say `text` on the phone's speaker without ringing: an auto-answered intercom call. `label` shows
         as the caller ID. Returns 'delivered' or why not."""
-        speech = asyncio.create_task(tts.render_async(text, voice=(self.s.whisper_provider, self.s.whisper_voice)))
+        speech = tts.Speech(tts.sentences(text), voice=self.whisper_voice())
         if self.line.locked():
             speech.cancel()
             return "line busy"
@@ -650,10 +715,10 @@ class Controller:
                 speech.cancel()
                 return why
             try:
-                await call.play(await speech)
+                await self.say(call, speech)
                 await call.hangup()
             except Hangup:
-                pass
+                speech.cancel()
             finally:
                 call.close()
         lg.info("whispered %r (%s)", text, label)
@@ -672,10 +737,9 @@ class Controller:
                     "sessions": listing}
         reason = self.sentence(body.get("reason"))
         handover = " ".join((body.get("handover") or "").split())
-        script = (f"{c['intro']}. " + (f"{reason} " if reason else "")
-                  + f"Putting you through to {tts.spoken_label(target.label)}.")
         lg.info("transfer from %s to ext=%s %s: %r", c["label"], target.ext, target.label, reason)
-        speech = asyncio.create_task(tts.render_async(script, c["repo"]))
+        speech = self.speech(c, (f"{reason} " if reason else "")
+                             + f"Putting you through to {self.spoken_name(target)}.")
 
         def missed(why: str) -> dict:
             speech.cancel()
@@ -693,11 +757,11 @@ class Controller:
             if not call:
                 return missed(why)
             try:
-                await call.play(await speech)
+                await self.say(call, speech)
                 prefix = f"[Phone transfer from {c['label']}" + (f": {handover}" if handover else "") + f"] {self.s.owner} says:"
                 said = await self.dial_session(call, target.ext, prefix=prefix, source=f"transfer {c['ext']}->{target.ext}")
             except Hangup:
-                return missed(f"{self.s.owner} hung up before the transfer completed")
+                return missed(f"{self.s.owner} hung up before the transfer completed")  # which cancels the speech
             finally:
                 await call.hangup()
                 call.close()
@@ -714,7 +778,7 @@ class Controller:
             await call.play(tts.phrase("vm_none"))
             return
         n = len(items)
-        intro = tts.render(tts.PHRASES["vm_intro"].format(n=n, questions="question" if n == 1 else "questions"))
+        intro = await tts.render_async(tts.PHRASES["vm_intro"].format(n=n, questions="question" if n == 1 else "questions"))
         await call.play(intro, tts.phrase("vm_keys"))
         for vm in items:
             if not call.up:

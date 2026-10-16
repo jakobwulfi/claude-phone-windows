@@ -161,6 +161,7 @@ def test_windows_speech_gets_the_text_outside_the_script(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(tts.subprocess, "run", lambda argv, **kw: calls.append((argv, kw)) or
                         tts.subprocess.CompletedProcess(argv, 0, "", ""))
+    monkeypatch.setattr(tts, "_ensure_wav16", lambda path: None)
     text = "It's $(Remove-Item x) \"quoted\""
     tts.PROVIDERS["sapi"].render(text, "Microsoft Zira Desktop", tmp_path / "out.wav")
     (argv, kw), = calls
@@ -215,3 +216,52 @@ def test_a_recording_that_cannot_be_deleted_still_delivers_the_text(tmp_path, mo
         raise PermissionError(32, "being used by another process")
     monkeypatch.setattr(Path, "unlink", locked)
     assert asyncio.run(daemon.Controller.__new__(daemon.Controller).transcribe("in-301-2")) == "Ship it."
+
+
+@pytest.mark.parametrize("text, parts", [
+    ("Done. The tests pass, all two hundred of them. Shall I merge it now or wait for you?",
+     ["Done. The tests pass, all two hundred of them.", "Shall I merge it now or wait for you?"]),
+    ("Done. The tests pass, all two hundred of them. Merge it?",
+     ["Done. The tests pass, all two hundred of them. Merge it?"]),  # a short last one isn't on its own
+    ("Use e.g. the 3.5 model, or ask Dr. Who.", ["Use e.g. the 3.5 model, or ask Dr. Who."]),
+    ('It said "Stop!" Then it stopped working entirely, for good.',
+     ['It said "Stop!" Then it stopped working entirely, for good.']),
+    ("One long first sentence, long enough to stand alone. Then a second one of good length. Ok.",
+     ["One long first sentence, long enough to stand alone.", "Then a second one of good length. Ok."]),
+    ("  ", []),
+])
+def test_text_is_spoken_in_sentences_with_short_ones_kept_with_the_next(text, parts):
+    assert tts.sentences(text) == parts
+
+
+def test_sentences_are_joined_into_one_recording_for_voicemail(tmp_path, monkeypatch):
+    monkeypatch.setattr(tts.config, "SOUNDS", tmp_path)
+    a, b = tmp_path / "a.wav", tmp_path / "b.wav"
+    _wav(a, 0.5, 800)
+    _wav(b, 0.25, 800)
+    joined = tts.join_wavs([str(a), str(b)])
+    with wave.open(joined) as w:
+        assert (w.getframerate(), w.getnchannels(), w.getnframes()) == (16000, 1, 12000)
+    assert tts.join_wavs([str(a), str(b)]) == joined  # reused, not joined again
+    assert tts.join_wavs([str(a)]) == str(a)
+
+
+@pytest.mark.parametrize("text", [
+    "We could try another language for this, e.g. Python, which has better libraries for the job.",
+    "The whole build took a while to finish, approx. 5 minutes on this machine and more on the server.",
+    "Nobody here knows the answer to that one, so ask Dr. Smith when she is back in the office.",
+    "That fix went into the release we shipped as No. 5 earlier today, along with the others.",
+])
+def test_common_abbreviations_dont_end_a_sentence(text):
+    assert tts.sentences(text) == [text]
+
+
+def test_a_part_in_another_format_is_converted_before_joining(tmp_path, monkeypatch):
+    monkeypatch.setattr(tts.config, "SOUNDS", tmp_path)
+    a, b = tmp_path / "a.wav", tmp_path / "b.wav"
+    _wav(a, 0.5, 800)
+    with wave.open(str(b), "wb") as w:  # 24 kHz, as Kokoro writes before conversion
+        w.setnchannels(1), w.setsampwidth(2), w.setframerate(24000)
+        w.writeframes(b"\0\0" * 12000)
+    with wave.open(tts.join_wavs([str(a), str(b)])) as w:
+        assert w.getframerate() == 16000 and abs(w.getnframes() - 16000) < 50

@@ -6,6 +6,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
+import sys
+from pathlib import Path
 from typing import Literal
 
 import aiohttp
@@ -170,11 +173,70 @@ async def change_phone(phone: Literal["desk", "softphone"] | None = None) -> str
         return f"Not changed: {e}."
 
 
+def _prerender_elsewhere() -> None:
+    """The fixed phrases in the new voice, by a `phone prerender` of its own: not in this process, which lives as
+    long as the Claude session and would keep a 150-250 MB engine for 10 minutes, nor within this tool's time.
+    One that is still going (the voice before) is stopped first. Best effort: phrases not ready are rendered when
+    first needed."""
+    from . import cli, log
+    try:
+        old = cli._pid("prerender")
+        if old:
+            cli.psutil.Process(old).kill()
+        p = subprocess.Popen([sys.executable, "-m", "claude_phone", "prerender"], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW)
+        cli.RUN.mkdir(parents=True, exist_ok=True)
+        (cli.RUN / "prerender.pid").write_text(str(p.pid))
+    except (OSError, cli.psutil.Error) as e:
+        log.get("mcp").warning("couldn't start `phone prerender`: %r", e)
+
+
+def _after_switch(now) -> None:
+    """The check before switching ran Piper or Kokoro here: let go of that engine, and warm the phrases elsewhere.
+    Never for ElevenLabs, where every phrase would cost credits."""
+    from . import voices, voiceworker
+    if now.engine in ("piper", "kokoro"):
+        voiceworker.stop_here(now.engine)
+    if now.engine in voices.LOCAL:
+        _prerender_elsewhere()
+
+
+async def change_voice(voice: str | None = None) -> str:
+    """Show or change the voice Claude speaks with on the phone. Change it only when {owner} asks.
+
+    Leave voice out to list the voices: the current one, those on this PC, and those that can be added. Voices are
+    named engine:name, e.g. "windows:Microsoft Zira Desktop", "piper:en_US-ryan-medium", "kokoro:af_heart",
+    "elevenlabs:<name>". A voice that isn't on this PC yet is not downloaded here: the reply gives its size and a
+    command. Ask {owner} for permission (say the size), and only if they agree run that command in the terminal.
+    Never ask for or handle an ElevenLabs API key: {owner} runs `phone voice key` in a terminal themselves.
+
+    Args:
+        voice: The voice to switch to, as engine:name; leave it out to list them.
+    """
+    from . import voices
+    phone = Path(sys.executable).with_name("phone.exe").as_posix()
+    try:
+        if not voice:
+            return await asyncio.to_thread(voices.describe)
+        said = await asyncio.to_thread(voices.choose, voice, False, None, lambda _: None, False)
+        await asyncio.to_thread(_after_switch, voices.current())
+        return said
+    except voices.NeedsDownload as e:
+        return (f"Not changed: {e}. Ask {S.owner_name} whether to download it; if they agree, run "
+                f"`{phone} voice {e.voice.spec} --download` in the terminal.")
+    except voices.NeedsKey as e:
+        return f"Not changed: {e}. Tell {S.owner_name}; don't ask for the key in chat."
+    except Exception as e:
+        return f"Not changed: {e}."
+
+
 # Tool names and descriptions carry the owner's name: call_sam, notify_sam for owner_name = "Sam".
 S = config.load()
 for fn, name in ((call_owner, f"call_{S.owner_slug}"), (notify_owner, f"notify_{S.owner_slug}"),
                  (transfer_call, "transfer_call"), (phone_settings, "phone_settings"),
-                 (change_phone_setting, "change_phone_setting"), (change_phone, "change_phone")):
+                 (change_phone_setting, "change_phone_setting"), (change_phone, "change_phone"),
+                 (change_voice, "change_voice")):
     mcp.add_tool(fn, name=name, description=fn.__doc__.format(owner=S.owner_name, slug=S.owner_slug))
 
 

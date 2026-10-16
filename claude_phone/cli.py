@@ -69,14 +69,21 @@ def freeswitch_api(cmd: str) -> str:
 
 # --- processes ---
 
+# A pid file outlives a reboot, and Windows soon gives its PID to another program. So the PID is the service only if
+# that process started before the file was written (seen 2026-10-16: Spotify had the daemon's PID after a restart).
+PID_FILE_SLACK_S = 2
+
+
 def _pid(name: str) -> int | None:
     f = RUN / f"{name}.pid"
     try:
         pid = int(f.read_text())
-    except (OSError, ValueError):
+        written = f.stat().st_mtime
+        # Not os.kill(pid, 0): on Windows that terminates the process instead of probing it.
+        started = psutil.Process(pid).create_time()
+    except (OSError, ValueError, psutil.Error):
         return None
-    # Not os.kill(pid, 0): on Windows that terminates the process instead of probing it.
-    return pid if psutil.pid_exists(pid) else None
+    return pid if started <= written + PID_FILE_SLACK_S else None
 
 
 @dataclass(frozen=True)
@@ -104,6 +111,7 @@ def _spawn(name: str, svc: Service, s: config.Settings) -> None:
 def _stop(name: str) -> None:
     pid = _pid(name)
     if not pid:
+        (RUN / f"{name}.pid").unlink(missing_ok=True)  # left by a crash or a reboot
         print(f"{name}: not running")
         return
     try:
@@ -209,6 +217,8 @@ def cmd_status(a) -> None:
         pid = _pid(n)
         print(f"{n:9} {'running pid ' + str(pid) if pid else 'stopped'}")
     print(f"{'audio':9} {audio_usage()}")
+    from . import voices
+    print(f"{'voice':9} {voices.current().spec}")
     try:
         with urllib.request.urlopen(f"{config.load().daemon_url}/health", timeout=3) as r:
             print("health   ", json.loads(r.read()))
@@ -334,7 +344,7 @@ def add_calendar(source: str) -> None:
     import getpass
     from . import diary
     print(f"Paste the {source.capitalize()} calendar's secret ICS link (it won't be shown), then press Enter.")
-    raw = getpass.getpass("link: ") if sys.stdin.isatty() else sys.stdin.readline()
+    raw = getpass.getpass("link: ") if _interactive() else sys.stdin.readline()
     url = ""
     try:
         url = diary.normalise_url(raw)
@@ -385,15 +395,99 @@ def cmd_change_phone(a) -> None:
         sys.exit(f"Not changed: {e}")
 
 
+def cmd_prerender(a) -> None:
+    from . import tts
+    print(f"rendered {tts.prerender()} phrases")
+
+
 def cmd_say(a) -> None:
     from . import tts
     print(tts.render(a.text))
 
 
-def cmd_voices(a) -> None:
-    from . import tts
-    for line in tts.sapi_voices():
-        print(line)
+VOICE_USAGE = ("Usage: phone voice [<engine:name> [--download] | list <engine> [filter] | try <engine:name> | "
+               "remove <engine:name> | key]")
+
+
+def cmd_voice(a) -> None:
+    """Claude's voice: show, switch (downloading with the user's yes), hear, delete, or store the ElevenLabs key."""
+    from . import voices
+    first, rest = (a.words[0].lower(), " ".join(a.words[1:])) if a.words else ("", "")
+    try:
+        if not a.words:
+            print(voices.describe())
+        elif first == "list":
+            print(voices.list_engine(a.words[1], " ".join(a.words[2:])) if rest else voices.describe())
+        elif first in ("remove", "delete"):
+            if not rest:
+                sys.exit(VOICE_USAGE)
+            print(voices.remove(rest))
+        elif first == "try":
+            if not rest:
+                sys.exit(VOICE_USAGE)
+            _play(voices.try_voice(rest))
+        elif first == "key":
+            print(voices.set_key(_read_secret("ElevenLabs API key")))
+        else:
+            _choose(" ".join(a.words), a.download)
+    except ValueError as e:
+        sys.exit(f"Not changed: {e}" if first not in ("", "list", "try") else str(e))
+
+
+def _interactive() -> bool:
+    """A person at a console. Not isatty() alone: Windows' NUL device passes that, and Claude runs commands with
+    NUL as input, where a prompt would wait forever."""
+    if not sys.stdin.isatty():
+        return False
+    try:
+        import ctypes
+        import msvcrt
+        mode = ctypes.c_uint()
+        return bool(ctypes.windll.kernel32.GetConsoleMode(msvcrt.get_osfhandle(sys.stdin.fileno()),
+                                                          ctypes.byref(mode)))
+    except (OSError, AttributeError, ValueError):
+        return False
+
+
+def _yes(question: str) -> bool:
+    try:
+        return input(f"{question} [y/N] ").strip().lower() in ("y", "yes")
+    except EOFError:
+        return False
+
+
+def _choose(name: str, download: bool) -> None:
+    from . import voices
+    interactive = _interactive()
+    ask = _yes if interactive else None
+    try:
+        print(voices.choose(name, download=download, ask=ask))
+    except voices.NeedsDownload as e:
+        if interactive:
+            sys.exit("Nothing downloaded or changed.")
+        # Claude ran this: it asks the user, then runs it again with --download.
+        print(f"{e}. Ask the user first; if they agree, run: phone voice {e.voice.spec} --download")
+        sys.exit(2)
+    except voices.NeedsKey as e:
+        if not interactive:
+            print(f"{e}.")
+            sys.exit(3)
+        print(voices.set_key(_read_secret("ElevenLabs API key")))
+        print(voices.choose(name, download=download, ask=ask))
+
+
+def _read_secret(what: str) -> str:
+    """Without echo (or from a pipe), so it stays out of shell history and logs."""
+    import getpass
+    print(f"Paste your {what} (it won't be shown), then press Enter.")
+    return getpass.getpass(f"{what}: ") if _interactive() else sys.stdin.readline()
+
+
+def _play(path: str) -> None:
+    """On this PC's speakers."""
+    import winsound
+    print(f"Playing {path}")
+    winsound.PlaySound(path, winsound.SND_FILENAME)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -417,6 +511,7 @@ def main(argv: list[str] | None = None) -> None:
     sp.add_argument("event", choices=["session-start", "session-end", "prompt", "stop"])
     sp.set_defaults(fn=cmd_hook)
     sub.add_parser("daemon").set_defaults(fn=cmd_daemon)
+    sub.add_parser("prerender", help="render the fixed phrases in the current voice").set_defaults(fn=cmd_prerender)
     sub.add_parser("mcp").set_defaults(fn=cmd_mcp)
     sp = sub.add_parser("secret", help="print (creating if needed) a secret: sip (the phones' password) | esl")
     sp.add_argument("name", choices=["sip", "esl"])
@@ -431,7 +526,12 @@ def main(argv: list[str] | None = None) -> None:
     sp = sub.add_parser("say", help="render text to speech, print the audio file's path")
     sp.add_argument("text")
     sp.set_defaults(fn=cmd_say)
-    sub.add_parser("voices", help="list the installed Windows voices").set_defaults(fn=cmd_voices)
+    sp = sub.add_parser("voice", aliases=["voices"],
+                        help="Claude's voice: show, switch, download, try or remove voices (`phone voice` lists them)")
+    sp.add_argument("words", nargs="*", help="<engine:name> | list <engine> [filter] | try <engine:name> | "
+                                              "remove <engine:name> | key")
+    sp.add_argument("--download", action="store_true", help="download the voice if needed, without asking")
+    sp.set_defaults(fn=cmd_voice)
     sub.add_parser("meeting-test", help="preview a meeting alert (whisper and screen)").set_defaults(fn=cmd_meeting_test)
     sub.add_parser("meetings", help="upcoming meetings the alerts will use").set_defaults(fn=cmd_meetings)
     from . import diary

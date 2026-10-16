@@ -41,6 +41,7 @@ def ctl(monkeypatch):
     c.s = daemon.config.load()
     c.line = asyncio.Lock()
     c.meeting, c.window, c.released, c.phone_dnd, c.dnd_ours = None, set(), set(), False, False
+    c.greeting_retry, c.warming = {}, None
 
     async def no_key(key):
         return False
@@ -52,6 +53,7 @@ def ctl(monkeypatch):
     monkeypatch.setattr(tts, "render", lambda text, repo=None, voice=None: f"tts:{text}")
     monkeypatch.setattr(tts, "render_async", render_async)
     monkeypatch.setattr(tts, "beep", lambda: "beep")
+    monkeypatch.setattr(tts, "join_wavs", lambda paths: "+".join(paths))
 
     async def transcribe(name):
         return c.heard.pop(0) if c.heard else ""
@@ -164,6 +166,180 @@ def test_unanswered_call_leaves_voicemail_and_pushes(ctl, monkeypatch):
     assert res["status"] == "voicemail"
     assert [v.question for v in registry.pending_voicemails()] == ["Merge it."]
     assert ctl.pushed == [("Missed call", "repo/main", "Merge it.", "not answered")]
+
+
+def test_a_question_left_as_voicemail_is_one_recording(ctl):
+    registry.register("s", "repo", "main", None, "/r", "tab")
+    run(ctl.call_owner({"question": "Merge it", "context": "The build is green", "session_id": "s",
+                        "_force_voicemail": "line busy"}))
+    vm, = registry.pending_voicemails()
+    assert vm.audio == "tts:repo.+tts:The build is green. Merge it."
+
+
+def answering(ctl, monkeypatch, call):
+    async def online():
+        return True
+
+    async def ring(c, prefix, auto_answer=False):
+        return call, ""
+    monkeypatch.setattr(ctl, "desk_online", online)
+    monkeypatch.setattr(ctl, "ring", ring)
+
+
+def test_a_long_message_is_spoken_a_sentence_at_a_time_after_the_greeting(ctl, monkeypatch):
+    registry.register("s", "repo", "main", None, "/r", "tab")
+    call = FakeCall()
+    answering(ctl, monkeypatch, call)
+    message = "Done. The tests pass, all two hundred of them. Shall I merge it? Next I'll write the docs."
+    assert run(ctl.notify_owner({"message": message, "session_id": "s"}))["status"] == "delivered"
+    assert call.played == ["tts:repo.", "tts:Done. The tests pass, all two hundred of them.",
+                           "tts:Shall I merge it? Next I'll write the docs.", tts.phrase("goodbye")]
+
+
+def test_speaking_starts_before_the_rest_is_rendered(ctl, monkeypatch):
+    registry.register("s", "repo", "main", None, "/r", "tab")
+
+    async def scenario():
+        heard = asyncio.Event()
+
+        class Call(FakeCall):
+            async def play(self, *media, **kw):
+                await super().play(*media, **kw)
+                heard.set()
+
+        async def render_async(text, repo=None, voice=None):
+            if text.startswith("And"):
+                await asyncio.wait_for(heard.wait(), 2)  # rendered only once the greeting was heard
+            return f"tts:{text}"
+        monkeypatch.setattr(tts, "render_async", render_async)
+        call = Call()
+        answering(ctl, monkeypatch, call)
+        await ctl.notify_owner({"message": "The first part is ready now. And the rest comes later.",
+                                "session_id": "s"})
+        return call.played
+    assert run(scenario())[-2] == "tts:And the rest comes later."
+
+
+def test_a_cold_engine_starts_before_anything_plays(ctl, monkeypatch):
+    from claude_phone import voiceworker
+    registry.register("s", "repo", "main", None, "/r", "tab")
+    events = []
+
+    async def render_async(text, repo=None, voice=None):
+        events.append(f"render {text}")
+        return f"tts:{text}"
+
+    class Call(FakeCall):
+        async def play(self, *media, **kw):
+            events.append(f"play {media[0]}")
+            await super().play(*media, **kw)
+    monkeypatch.setattr(tts, "render_async", render_async)
+    monkeypatch.setattr(tts, "voice_for", lambda repo: ("kokoro", "am_adam"))
+    monkeypatch.setattr(voiceworker, "is_warm", lambda engine: False)
+    answering(ctl, monkeypatch, Call())
+    run(ctl.notify_owner({"message": "The first sentence is long enough to stand alone. Then more.",
+                          "session_id": "s"}))
+    # Its start (loading the model) made the first sentence stutter when it overlapped the playing.
+    assert events.index("render The first sentence is long enough to stand alone. Then more.") \
+        < events.index("play tts:repo.")
+
+
+def test_the_meeting_whisper_speaks_with_claudes_voice_unless_set_otherwise(ctl, monkeypatch):
+    voices = []
+
+    async def render_async(text, repo=None, voice=None):
+        voices.append(voice)
+        return f"tts:{text}"
+    monkeypatch.setattr(tts, "render_async", render_async)
+    answering(ctl, monkeypatch, FakeCall())
+    ctl.s.whisper_provider, ctl.s.whisper_voice = "", ""
+    assert run(ctl.whisper("Meeting in two minutes.", "14:00 Board")) == "delivered"
+    ctl.s.whisper_provider, ctl.s.whisper_voice = "sapi", "Microsoft Zira Desktop"
+    run(ctl.whisper("Meeting in two minutes.", "14:00 Board"))
+    assert voices == [None, ("sapi", "Microsoft Zira Desktop")]  # None: Claude's voice, whichever it is now
+    assert daemon.config.Settings().whisper_provider == ""
+
+
+def test_the_meeting_whisper_is_ready_before_a_meeting(ctl, monkeypatch):
+    rendered = []
+    monkeypatch.setattr(tts, "render", lambda text, repo=None, voice=None, fallback=True:
+                        rendered.append((text, voice)))
+    ctl.s.meeting_alerts, ctl.s.whisper_text, ctl.s.whisper_provider = True, "Psst. Meeting soon.", ""
+    run(ctl.warm_greetings())
+    assert rendered == [("Psst. Meeting soon.", None)]  # answered on the speaker at once: no ringing to hide it
+    ctl.s.meeting_alerts, rendered[:] = False, []
+    run(ctl.warm_greetings())
+    assert rendered == []
+
+
+def test_two_sessions_on_one_branch_are_told_apart_by_their_extension(ctl, monkeypatch):
+    a = registry.register("s1", "site", "fix-login", None, "/r", "t1")
+    b = registry.register("s2", "site", "fix-login", None, "/r", "t2")
+    call = FakeCall()
+    answering(ctl, monkeypatch, call)
+    run(ctl.transfer({"to": str(b.ext), "reason": "Over to you.", "session_id": "s1", "term_id": "t1"}))
+    assert call.played[:2] == [f"tts:site, fix login, {a.ext}.", f"tts:Over to you. Putting you through to site, "
+                                                                f"fix login, {b.ext}."]
+    assert f"tts:You're through to site, fix login, {b.ext}." in call.played
+    registry.unregister("s2")
+    alone = FakeCall()
+    answering(ctl, monkeypatch, alone)
+    run(ctl.notify_owner({"message": "Hi", "session_id": "s1"}))
+    assert alone.played[0] == "tts:site, fix login."  # no one to confuse it with
+
+
+def test_each_live_sessions_greeting_is_ready_before_it_calls(ctl, monkeypatch):
+    registry.register("s", "site", "fix-login", None, "/r", "tab")
+    rendered = []
+    monkeypatch.setattr(tts, "render", lambda text, repo=None, voice=None, fallback=True:
+                        rendered.append((text, repo)))
+    run(ctl.warm_greetings())
+    call = FakeCall()
+    answering(ctl, monkeypatch, call)
+    monkeypatch.setattr(tts, "render", lambda text, repo=None, voice=None: f"tts:{text}")
+    run(ctl.notify_owner({"message": "Hi", "session_id": "s"}))
+    assert rendered == [(call.played[0].removeprefix("tts:"), "site")]
+
+
+def test_a_greeting_that_fails_waits_before_it_is_tried_again(ctl, monkeypatch):
+    registry.register("s1", "broken", "main", None, "/r", "tab1")
+    registry.register("s2", "fine", "main", None, "/r", "tab2")
+    tried = []
+
+    def render(text, repo=None, voice=None, fallback=True):
+        tried.append(repo)
+        assert not fallback  # a fallback would hide the failure
+        if repo == "broken":
+            raise RuntimeError("the kokoro engine didn't start")
+        return f"tts:{text}"
+    monkeypatch.setattr(tts, "render", render)
+    run(ctl.warm_greetings())
+    run(ctl.warm_greetings())  # a minute later
+    assert sorted(tried) == ["broken", "fine", "fine"]  # the other session still got its greeting
+
+
+def test_hanging_up_stops_rendering_the_rest(ctl, monkeypatch):
+    registry.register("s", "repo", "main", None, "/r", "tab")
+
+    async def scenario():
+        rendered = []
+
+        async def render_async(text, repo=None, voice=None):
+            rendered.append(text)
+            await asyncio.sleep(0)
+            return f"tts:{text}"
+        monkeypatch.setattr(tts, "render_async", render_async)
+
+        class HangsUp(FakeCall):
+            async def play(self, *media, **kw):
+                raise daemon.Hangup()
+        answering(ctl, monkeypatch, HangsUp())
+        res = await ctl.notify_owner({"message": "The first part is ready now. And then a lot more is said "
+                                      "after it. And more again, for a long while yet.", "session_id": "s"})
+        await asyncio.sleep(0.05)
+        return res, rendered
+    res, rendered = run(scenario())
+    assert res["status"] == "delivered" and len(rendered) < 4
 
 
 def test_hanging_up_on_a_question_does_not_push(ctl):

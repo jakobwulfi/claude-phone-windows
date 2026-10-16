@@ -21,6 +21,9 @@ DB_PATH = HOME / "registry.db"
 SOUNDS = HOME / "sounds"
 RECORDINGS = HOME / "recordings"
 MODELS = HOME / "models"
+# Optional voices, downloaded by `phone voice`: each engine's Python packages, and the voice files it reads.
+ENGINES = HOME / "engines"
+VOICES = HOME / "voices"
 LOGS = HOME / "logs"
 LOG_FILE = LOGS / "phone.log"
 # One file per VS Code window, written by the claude-phone extension: how to reach that window's terminals.
@@ -67,6 +70,8 @@ class Settings:
     # Nothing waits on these, so they can run long; whisper takes ~25 s for 5 minutes on a 6-core CPU.
     message_seconds: int = 300
     callerid_max: int = 17  # T31P shows 17 chars before scrolling (tested 2026-10-09)
+    # Claude's voice as "engine:name", set by `phone voice`. Empty: tts_provider with sapi_voice/elevenlabs_voice_id.
+    voice: str = ""
     tts_provider: str = "sapi"
     sapi_voice: str = ""  # empty: the Windows default voice
     # Yealink Push XML: summaries of calls and meetings on the desk phone's screen. The phone must list lan_ip
@@ -81,8 +86,9 @@ class Settings:
     calendar_sources: list = field(default_factory=lambda: ["google"])  # "google", "outlook", or both
     calendar_refresh_minutes: int = 5
     calendar_email: str = ""  # your address, to skip meetings you declined; empty: the feed's name, if an address
-    # The meeting whisper, played on the speaker without ringing. "elevenlabs_v3" acts out tags like "[whispers]".
-    whisper_provider: str = "sapi"
+    # The meeting whisper, played on the speaker without ringing. Empty: Claude's voice, whichever `phone voice`
+    # set. "elevenlabs_v3" acts out tags like "[whispers]".
+    whisper_provider: str = ""
     whisper_voice: str = ""
     whisper_text: str = "Pssst. You have a meeting."
     elevenlabs_voice_id: str = "JBFqnCBsd6RMkjVDRZzb"
@@ -144,7 +150,8 @@ DESCRIPTIONS = {
     "record_seconds": "how long you can answer Claude's call",
     "message_seconds": "how long you can talk when you dial in (30-600)",
     "callerid_max": "the longest caller ID (repo/branch) shown on the phone",
-    "tts_provider": "Claude's voice provider: sapi (Windows voices), elevenlabs or elevenlabs_v3",
+    "voice": "Claude's voice: `phone voice` lists, downloads and switches them",
+    "tts_provider": "Claude's voice provider when voice is empty: sapi (Windows), elevenlabs or elevenlabs_v3",
     "sapi_voice": "the Windows voice Claude speaks with (empty: the default voice)",
     "screen_push": "show call and meeting summaries on a Yealink desk phone's screen",
     "desk_ip": "the desk phone's address for screen pushes (empty: where it registered from)",
@@ -153,8 +160,9 @@ DESCRIPTIONS = {
     "calendar_sources": "the calendars the meeting alerts read: google, outlook or both",
     "calendar_refresh_minutes": "how often the calendars are read again",
     "calendar_email": "your address, to skip meetings you declined (empty: the calendar's name)",
-    "whisper_provider": "the meeting whisper's voice provider: sapi, elevenlabs or elevenlabs_v3",
-    "whisper_voice": "the meeting whisper's voice (empty: Claude's voice for that provider)",
+    "whisper_provider": "the meeting whisper's voice engine: windows, piper, kokoro, elevenlabs or elevenlabs_v3 "
+                        "(empty: Claude's voice)",
+    "whisper_voice": "the meeting whisper's voice in that engine (empty: its default voice)",
     "whisper_text": "what the meeting whisper says",
     "elevenlabs_voice_id": "the ElevenLabs voice, used wherever a voice provider is elevenlabs",
     "elevenlabs_model": "the ElevenLabs model",

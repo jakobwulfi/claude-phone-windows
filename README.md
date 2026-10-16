@@ -107,11 +107,39 @@ The MCP server (the `call_<name>` tools) is registered once calls work:
 
 ### Voices
 
-Calls use the Windows voices (System.Speech): free, offline, no account. `phone voices` lists the installed
-ones; set `sapi_voice` (and `operator_voice` for the operator on 0) in config.toml to a name from that list.
-`phone say "hello"` renders a phrase and prints where the audio went.
+Calls use the Windows voices: free, offline, no account. `phone voice` lists the voices on this PC (System.Speech's
+and the newer OneCore ones, such as Mark) and the ones that can be added. Nothing extra is downloaded until you ask:
 
-For nicer voices, use ElevenLabs:
+| Engine | Cost | On disk | Notes |
+|---|---|---|---|
+| `windows` | free, offline | built in | the default; can't be deleted |
+| `piper` | free, offline | engine 152 MB once, then 20-120 MB per voice | ~170 MB RAM while speaking |
+| `kokoro` | free, offline | 250 MB for all 54 voices | the most natural; ~260 MB RAM while speaking |
+| `elevenlabs` | paid per character | nothing | online; needs your API key |
+
+```text
+phone voice                          # what Claude speaks with now, and what's available
+phone voice list piper en_GB         # an engine's voices, filtered
+phone voice piper:en_GB-alan-medium  # switch; asks before downloading, then switches
+phone voice try kokoro:bf_emma       # hear one on this PC's speakers first
+phone voice remove piper:en_GB-alan-medium
+phone voice key                      # store the ElevenLabs key in Windows Credential Manager
+```
+
+A switch takes effect on the next thing Claude says, with no restart. You can also ask Claude, or use
+`/claude-phone voice …`; Claude asks you before any download and never handles the API key. Piper and Kokoro run in
+a separate process that stops after 10 idle minutes, so they hold no memory between calls. Deleting the voice in use
+switches back to the Windows default first, and deleting the last Piper voice deletes the engine too. The
+downloads live in `~/.claude-phone/engines/` and `~/.claude-phone/voices/`. The Piper engine is GPL-3 licensed;
+it's downloaded on request, not bundled.
+
+For an ElevenLabs key: make an account at elevenlabs.io, open Profile → API Keys, create a key with the
+**Text to Speech** and **Voices: Read** permissions, then run `phone voice key` and paste it.
+
+The operator on 0 keeps its own voice (`operator_voice`). `phone say "hello"` renders a phrase and prints where the
+audio went.
+
+The older settings still work when `voice` is empty: `tts_provider` with `sapi_voice` or `elevenlabs_voice_id`, e.g.
 
 ```toml
 tts_provider = "elevenlabs"

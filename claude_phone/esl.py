@@ -279,6 +279,7 @@ class Call:
             pass
 
     async def answer(self) -> None:
+        await self._set("send_silence_when_idle", IDLE_SILENCE)
         await self._api(f"uuid_answer {self.id}")
 
     async def hangup(self) -> None:
@@ -353,6 +354,12 @@ class Call:
             await self.esl.api(f"uuid_displace {self.id} start {TIME_UP_TONE} 0 mux")
         except (ESLError, ConnectionError, asyncio.TimeoutError) as e:
             self.esl.lg.info("time-up beep on %s failed: %r", self.id, e)
+
+
+# send_silence_when_idle on every call: digital silence (-1) whenever nothing plays. FreeSWITCH otherwise stops the
+# RTP stream between playbacks (speech is played a sentence at a time), and a softphone's adaptive jitter buffer
+# stretches the audio each time the stream starts again: it "slows down a bit" (Linphone, 2026-10-16).
+IDLE_SILENCE = "-1"
 
 
 def originate_vars(values: dict[str, str]) -> str:

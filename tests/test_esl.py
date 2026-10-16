@@ -311,6 +311,19 @@ def test_ring_returns_the_call_once_answered_and_parked(tmp_path):
     (dial, _), = fs.sent("bgapi originate")
     assert "user/201@192.168.0.24 &park()" in dial
     assert "origination_caller_id_name='repo/main'" in dial and "sip_h_Alert-Info='<http://127.0.0.1>;info=Ring" in dial
+    assert f"send_silence_when_idle='{esl.IDLE_SILENCE}'" in dial
+
+
+def test_an_answered_call_keeps_sending_audio_between_playbacks(tmp_path):
+    # Without it FreeSWITCH stops the RTP stream whenever nothing plays, and the softphone's adaptive jitter
+    # buffer stretches the audio each time it starts again.
+    async def go():
+        fs, client, task = await connect(tmp_path)
+        await esl.Call(client, "c1").answer()
+        task.cancel()
+        fs.close()
+        return [first for first, _ in fs.sent("api uuid_")]
+    assert run(go()) == [f"api uuid_setvar c1 send_silence_when_idle {esl.IDLE_SILENCE}", "api uuid_answer c1"]
 
 
 def test_ring_reports_why_an_unanswered_call_failed(tmp_path):

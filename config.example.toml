@@ -17,8 +17,12 @@ ring_seconds = 25       # [phone config] 10-40; keep ring_seconds + record_secon
 record_seconds = 60     # answers to Claude's calls
 message_seconds = 300   # messages you dial in (sessions, all-hands, voicemail replies), 30-600
 callerid_max = 17       # [phone config] 10-40; the T31P shows 17 characters before scrolling
+# Claude's voice as engine:name: windows (built in), piper or kokoro (free, offline, downloaded on request) or
+# elevenlabs (paid; `phone voice key`). Set it with `phone voice`, which lists them and asks before downloading.
+# voice = "windows:Microsoft Mark"
+# When voice is empty, these apply:
 tts_provider = "sapi"   # Windows voices, or "elevenlabs" (ELEVENLABS_API_KEY or Credential Manager claude-phone/elevenlabs)
-sapi_voice = ""         # empty: the Windows default voice. `phone voices` lists the installed ones
+sapi_voice = ""         # empty: the Windows default voice. `phone voice` lists the installed ones
 operator_provider = "sapi"  # dial 0; "elevenlabs" with an ElevenLabs voice id below
 operator_voice = "Microsoft Zira Desktop"
 # elevenlabs_voice_id = "JBFqnCBsd6RMkjVDRZzb"
@@ -59,8 +63,8 @@ operator_voice = "Microsoft Zira Desktop"
 # calendar_email = "you@example.com"  # to skip meetings you declined; default: the calendar's name, if an address
 # The whisper before a meeting, played on the speaker without ringing. "elevenlabs_v3" acts out tags like "[whispers]".
 # whisper_text = "Pssst. You have a meeting."  # [phone config] up to 120 characters
-# whisper_provider = "sapi"
-# whisper_voice = ""
+# whisper_provider = ""  # empty: Claude's voice; or windows, piper, kokoro, elevenlabs, elevenlabs_v3
+# whisper_voice = ""     # a voice of that engine, e.g. "Microsoft Zira Desktop" or "bf_emma"
 
 # Missed-call pushes to the ntfy app (README: "Missed-call pushes"). The topic is a secret: `phone push`.
 # ntfy_server = "https://ntfy.sh"

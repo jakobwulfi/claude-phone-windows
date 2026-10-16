@@ -114,6 +114,8 @@ def _key(key: str) -> str:
     key = key.strip().lower().replace("-", "_")
     if key in SPECS:
         return key
+    if key == "voice":
+        raise ValueError("Claude's voice is changed with `phone voice`, which also downloads it if needed")
     if key in {f.name for f in fields(config.Settings)}:
         raise ValueError(f"{key} can only be changed by editing {config.CONFIG_FILE}")
     raise ValueError(f"there's no setting called {key!r}. The ones you can change: {', '.join(SPECS)}")
