@@ -66,6 +66,13 @@ def test_the_tools_are_registered_with_the_owners_name_filled_in():
     assert f"Only when {config.load().owner_name} has asked" in tools["change_phone_setting"].description
 
 
+def test_calling_messaging_and_reading_settings_are_read_only_so_plan_mode_lets_them_run():
+    slug = config.load().owner_slug
+    read_only = {t.name for t in asyncio.run(mcp_server.mcp.list_tools())
+                 if t.annotations and t.annotations.read_only_hint}
+    assert read_only == {f"call_{slug}", f"notify_{slug}", "phone_settings"}
+
+
 def test_settings_can_be_listed_explained_and_changed():
     assert "meeting_warn_minutes = 2  (default)" in asyncio.run(mcp_server.phone_settings())
     assert asyncio.run(mcp_server.phone_settings("ring_seconds")).startswith("ring_seconds = 25 (the default")

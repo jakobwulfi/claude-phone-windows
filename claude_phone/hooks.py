@@ -33,6 +33,30 @@ def repo_info(cwd: str) -> tuple[str, str | None, str | None]:
     return repo, branch, worktree
 
 
+# Entering plan mode changes no files, and when it was asked for by phone its approval prompt would wait in a
+# terminal nobody is watching. Typed at the keyboard it still asks, and so does ExitPlanMode, which approves the plan.
+NO_APPROVAL_BY_PHONE = {"EnterPlanMode"}
+# Ringing or messaging the owner changes no files, so it needs no allow rule. Plan mode asks before hooks run; there the
+# tools' read-only annotation (mcp_server.READ_ONLY) is what lets them through.
+# Matched by prefix since the tools carry the owner's name (call_sam). Settings tools and transfer_call still ask.
+NO_APPROVAL_PREFIXES = ("mcp__claude-phone__call_", "mcp__claude-phone__notify_")
+
+
+def _allow(reason: str) -> None:
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse", "permissionDecision": "allow",
+        "permissionDecisionReason": f"claude-phone: {reason}",
+    }}))
+
+
+def pre_tool(sid: str, payload: dict) -> None:
+    tool = payload.get("tool_name") or ""
+    if tool.startswith(NO_APPROVAL_PREFIXES):
+        _allow("calling the owner changes no files")
+    elif tool in NO_APPROVAL_BY_PHONE and registry.last_prompt_by_phone(sid):
+        _allow("asked for by phone")
+
+
 def run(event: str) -> int:
     lg = log.get("hook")
     try:
@@ -58,6 +82,9 @@ def run(event: str) -> int:
             lg.info("session end sid=%s reason=%s", sid, payload.get("reason"))
         elif event == "prompt":
             registry.set_status(sid, "working")
+            registry.record_prompt(sid, str(payload.get("prompt") or ""))
+        elif event == "pre-tool":
+            pre_tool(sid, payload)
         elif event == "stop":
             registry.set_status(sid, "idle")
     except Exception as e:  # never block Claude Code

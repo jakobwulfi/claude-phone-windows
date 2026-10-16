@@ -22,4 +22,7 @@ whose tools are `call_sam` and `notify_sam`: replace `Sam` and `sam` with your n
   reversible assumption; the answer arrives later as a message starting
   `[Phone answer to your earlier question]`. A missed `notify_sam` leaves nothing behind.
 - Subagents: pass `from_agent` with a short name for yourself.
+- If Sam asks by phone for plan mode and entering it waits for approval in the terminal, Sam's Claude Code
+  settings lack claude-phone's `PreToolUse` hook. Tell Sam on screen to add it from claude-phone's README
+  ("Claude Code wiring"); `phone status` lists any hooks that are missing.
 ```

@@ -13,6 +13,7 @@ from typing import Literal
 
 import aiohttp
 from mcp.server.mcpserver import MCPServer
+from mcp.types import ToolAnnotations
 
 from . import config, configedit, inject
 
@@ -127,7 +128,7 @@ async def phone_settings(key: str | None = None) -> str:
 
     Use when {owner} asks about a phone setting: which calendars the meeting alerts read, whether they're on, how
     many minutes before a meeting the warning comes, the caller ID length, their name, how long Claude's calls ring,
-    or what the meeting whisper says.
+    what the meeting whisper says, or whether claude-phone starts when VS Code opens.
 
     Args:
         key: One setting's name (e.g. "meeting_warn_minutes"). Leave it out to list them all.
@@ -145,8 +146,8 @@ async def change_phone_setting(key: str, value: str) -> str:
     """Change one of claude-phone's settings in its config file. Only when {owner} has asked for this change.
 
     The settings: calendar_sources (google, outlook or both, comma-separated), meeting_alerts (on/off),
-    meeting_warn_minutes (1-30), callerid_max (10-40), owner_name, ring_seconds (10-40) and whisper_text (what the
-    meeting whisper says). Nothing is restarted: tell {owner} the result, including what needs restarting.
+    meeting_warn_minutes (1-30), callerid_max (10-40), owner_name, ring_seconds (10-40), whisper_text (what the
+    meeting whisper says) and autostart (on/off: start claude-phone when VS Code opens). Nothing is restarted: tell {owner} the result, including what needs restarting.
 
     Args:
         key: The setting's name, e.g. "meeting_warn_minutes".
@@ -233,11 +234,15 @@ async def change_voice(voice: str | None = None) -> str:
 
 # Tool names and descriptions carry the owner's name: call_sam, notify_sam for owner_name = "Sam".
 S = config.load()
+# These change no files or settings, so Claude Code may run them in plan mode without a prompt, as it does a question
+# typed in the terminal. Plan mode asks before any hook or allow rule is consulted, so only this annotation helps there.
+READ_ONLY = {call_owner, notify_owner, phone_settings}
 for fn, name in ((call_owner, f"call_{S.owner_slug}"), (notify_owner, f"notify_{S.owner_slug}"),
                  (transfer_call, "transfer_call"), (phone_settings, "phone_settings"),
                  (change_phone_setting, "change_phone_setting"), (change_phone, "change_phone"),
                  (change_voice, "change_voice")):
-    mcp.add_tool(fn, name=name, description=fn.__doc__.format(owner=S.owner_name, slug=S.owner_slug))
+    mcp.add_tool(fn, name=name, description=fn.__doc__.format(owner=S.owner_name, slug=S.owner_slug),
+                 annotations=ToolAnnotations(read_only_hint=True) if fn in READ_ONLY else None)
 
 
 def run() -> None:

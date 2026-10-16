@@ -1,4 +1,4 @@
-"""Claude Code hook handlers: sessions registering as they start, their status, and plan mode by phone."""
+"""Claude Code hook handlers: sessions registering as they start, their status, plan mode by phone, and calling the owner."""
 
 import io
 import json
@@ -56,3 +56,14 @@ def test_plan_mode_asked_for_by_phone_needs_no_approval_but_typed_at_the_keyboar
     hook(monkeypatch, "prompt", prompt="Now plan the next part.")
     hook(monkeypatch, "pre-tool", tool_name="EnterPlanMode")
     assert capsys.readouterr().out == ""
+
+
+def test_calling_or_messaging_the_owner_needs_no_approval_but_changing_settings_does(monkeypatch, capsys):
+    registry.register("s", "repo", "main", None, "/r", "vscode:1")
+    hook(monkeypatch, "prompt", prompt="Enter plan mode and call me back.")  # typed at the keyboard
+    for tool in ("mcp__claude-phone__call_jakob", "mcp__claude-phone__notify_jakob"):
+        hook(monkeypatch, "pre-tool", tool_name=tool)
+        assert json.loads(capsys.readouterr().out)["hookSpecificOutput"]["permissionDecision"] == "allow"
+    for tool in ("mcp__claude-phone__change_phone_setting", "mcp__claude-phone__transfer_call"):
+        hook(monkeypatch, "pre-tool", tool_name=tool)
+        assert capsys.readouterr().out == ""

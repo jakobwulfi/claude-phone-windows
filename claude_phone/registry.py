@@ -50,7 +50,14 @@ CREATE TABLE IF NOT EXISTS injections (
   text       TEXT NOT NULL,
   result     TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS prompts (
+  session_id TEXT PRIMARY KEY,
+  text       TEXT NOT NULL,
+  ts         REAL NOT NULL
+);
 """
+# A typed message lands in the session's prompt within moments of being logged; the hook may see it either side.
+PROMPT_MATCH_S = 30
 
 
 @dataclass
@@ -144,6 +151,7 @@ def register(session_id: str, repo: str, branch: str | None, worktree: str | Non
 def unregister(session_id: str) -> None:
     with connect() as db:
         db.execute("DELETE FROM sessions WHERE session_id=?", (session_id,))
+        db.execute("DELETE FROM prompts WHERE session_id=?", (session_id,))
 
 
 def set_status(session_id: str, status: str) -> None:
@@ -228,6 +236,29 @@ def ringtone(repo: str, choices: int = 8) -> int:
         db.execute("INSERT INTO ringtones (repo, ring) VALUES (?, ?)", (repo, ring))
         db.execute("COMMIT")
         return ring
+
+
+def record_prompt(session_id: str, text: str) -> None:
+    """The session's latest prompt, from the UserPromptSubmit hook."""
+    with connect() as db:
+        db.execute("INSERT OR REPLACE INTO prompts (session_id, text, ts) VALUES (?,?,?)",
+                   (session_id, text, time.time()))
+
+
+def _flat(text: str) -> str:
+    return " ".join(text.split())
+
+
+def last_prompt_by_phone(session_id: str) -> bool:
+    """True when the session's latest prompt is a phone message the daemon typed in, not one typed at the keyboard."""
+    with connect() as db:
+        prompt = db.execute("SELECT text, ts FROM prompts WHERE session_id=?", (session_id,)).fetchone()
+        sess = db.execute("SELECT ext FROM sessions WHERE session_id=?", (session_id,)).fetchone()
+        if not prompt or not sess:
+            return False
+        typed = db.execute("SELECT text FROM injections WHERE ext=? AND result='sent' AND ts BETWEEN ? AND ?",
+                           (sess["ext"], prompt["ts"] - PROMPT_MATCH_S, prompt["ts"] + PROMPT_MATCH_S))
+        return any(_flat(r["text"]) == _flat(prompt["text"]) for r in typed)
 
 
 def log_injection(session: Session | None, source: str, text: str, result: str) -> None:

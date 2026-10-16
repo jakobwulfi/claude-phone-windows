@@ -1,6 +1,7 @@
 """The `phone` command line: starting services and changing settings."""
 
 import argparse
+import json
 import os
 import subprocess
 import time
@@ -84,6 +85,17 @@ def test_a_lock_left_by_a_killed_phone_up_is_taken_over(monkeypatch, tmp_path):
     old = time.time() - cli.UP_LOCK_STALE_S - 1
     os.utime(lock, (old, old))
     assert cli._take_up_lock() == lock
+
+
+def test_status_names_the_claude_code_hooks_that_are_missing(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+    assert cli.missing_hooks() == list(cli.HOOKS.values())  # no settings.json yet
+    hook = {"type": "command", "command": "C:/x/phone.exe", "args": ["hook", "session-start"]}
+    (tmp_path / "settings.json").write_text(json.dumps({"hooks": {
+        "SessionStart": [{"hooks": [hook]}],
+        "Stop": [{"hooks": [{"type": "command", "command": "C:/x/phone.exe hook stop"}]}],
+    }}), encoding="utf-8")
+    assert cli.missing_hooks() == ["session-end", "prompt", "pre-tool"]
 
 
 def test_audio_usage_counts_recordings_and_speech(monkeypatch, tmp_path):

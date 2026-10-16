@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import socket
+import sys
 import tomllib
 from dataclasses import dataclass, field, fields
 from pathlib import Path
@@ -29,6 +31,8 @@ LOG_FILE = LOGS / "phone.log"
 # One file per VS Code window, written by the claude-phone extension: how to reach that window's terminals.
 BRIDGES = HOME / "bridges"
 CONFIG_FILE = HOME / "config.toml"
+# Where phone.exe is, for the VS Code extension to run `phone up` when autostart is on.
+PHONE_FILE = HOME / "phone.json"
 MESSAGE_SECONDS_MIN, MESSAGE_SECONDS_MAX = 30, 600
 
 
@@ -102,6 +106,8 @@ class Settings:
     # Push to the ntfy app when a call is missed. The topic is a secret in the keychain (`phone push`).
     ntfy_server: str = "https://ntfy.sh"
     push_text: bool = True  # include the question/announcement; False sends only who called
+    # The VS Code extension runs `phone up` when a window opens and claude-phone isn't running. False: only by command.
+    autostart: bool = False
 
     @property
     def owner(self) -> str:
@@ -171,6 +177,7 @@ DESCRIPTIONS = {
     "repo_ringtones": "a Yealink ringtone (1-8) per repo",
     "ntfy_server": "the ntfy server missed-call pushes go through",
     "push_text": "include the question in missed-call pushes (false: only who called)",
+    "autostart": "start claude-phone when VS Code opens (false: only with `phone up` or /claude-phone)",
 }
 
 
@@ -234,6 +241,14 @@ def ip_warning() -> str | None:
     return (f"This PC doesn't have {ip}, so the desk phone can't be reached: calls go to voicemail "
             f"and missed-call pushes. Away from home, that's expected. If the home address changed for good, set "
             f"lan_ip in {CONFIG_FILE}, run `phone restart freeswitch`, and update the SIP server on the phones.")
+
+
+def remember_phone_exe() -> None:
+    """Leaves phone.exe's path (beside this venv's python.exe) where the VS Code extension looks for it."""
+    exe = Path(sys.executable).with_name("phone.exe")
+    if exe.exists():
+        HOME.mkdir(parents=True, exist_ok=True)
+        PHONE_FILE.write_text(json.dumps({"exe": str(exe)}), encoding="utf-8")
 
 
 def ensure_dirs() -> None:

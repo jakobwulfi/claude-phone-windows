@@ -22,6 +22,7 @@ APPLIES = {
     "daemon": f"Takes effect after `{RESTART}`.",
     "sessions": f"Takes effect after `{RESTART}`; Claude Code sessions get the new tool names (call_<name>) "
                 "once they are started again.",
+    "vscode": "Takes effect the next time a VS Code window opens.",
 }
 # The whole call_<owner> call must end within Claude Code's 120 s limit for MCP calls.
 RING_PLUS_RECORD_MAX = 90
@@ -106,6 +107,8 @@ SPECS: dict[str, Spec] = {
     "ring_seconds": Spec("how long Claude's calls ring before going to voicemail, 10-40 seconds and at most 90 "
                          "minus record_seconds (so 30 by default)", _ring_seconds, "daemon"),
     "whisper_text": Spec("what the meeting whisper says, up to 120 characters", _text(120), "daemon"),
+    "autostart": Spec("start claude-phone when VS Code opens (off: only with `phone up` or /claude-phone): on or off",
+                      _bool, "vscode"),
 }
 
 
@@ -166,6 +169,8 @@ def set_value(key: str, raw: str) -> str:
     spec = SPECS[key]
     value = spec.parse(raw)
     _write(key, value)
+    if key == "autostart" and value:
+        config.remember_phone_exe()
     return f"Saved: {key} = {_quoted(value)}. {APPLIES[spec.applies]}" + _warnings(key, value)
 
 

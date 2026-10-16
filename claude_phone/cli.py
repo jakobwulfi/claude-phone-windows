@@ -165,18 +165,46 @@ SERVICES = {
 }
 
 
+# VS Code windows restored together each run `phone up` (autostart). The first takes this lock and the others leave
+# the starting to it. A lock older than this was left by an `up` that was killed.
+UP_LOCK_STALE_S = 300
+
+
+def _take_up_lock() -> Path | None:
+    lock = RUN / "up.lock"
+    RUN.mkdir(parents=True, exist_ok=True)
+    try:
+        if time.time() - lock.stat().st_mtime > UP_LOCK_STALE_S:
+            lock.unlink(missing_ok=True)
+    except FileNotFoundError:
+        pass
+    try:
+        os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+    except FileExistsError:
+        return None
+    return lock
+
+
 def cmd_up(a) -> None:
     config.ensure_dirs()
-    s = config.load()
-    render_freeswitch_config()
-    ensure_model()
-    names = [a.only] if a.only else list(SERVICES)
-    for n in names:
-        _spawn(n, SERVICES[n], s)
-        if n == "freeswitch":
-            time.sleep(3)
-        if n == "whisper":
-            time.sleep(2)
+    lock = _take_up_lock()
+    if not lock:
+        print("another `phone up` is starting claude-phone")
+        return
+    try:
+        config.remember_phone_exe()
+        s = config.load()
+        render_freeswitch_config()
+        ensure_model()
+        names = [a.only] if a.only else list(SERVICES)
+        for n in names:
+            _spawn(n, SERVICES[n], s)
+            if n == "freeswitch":
+                time.sleep(3)
+            if n == "whisper":
+                time.sleep(2)
+    finally:
+        lock.unlink(missing_ok=True)
 
 
 def cmd_down(a) -> None:
@@ -209,10 +237,36 @@ def audio_usage() -> str:
             f"(recordings {len(rec)}, speech {len(speech)})")
 
 
+# Claude Code event -> `phone hook` argument. README "Claude Code wiring" has the settings for each.
+HOOKS = {"SessionStart": "session-start", "SessionEnd": "session-end", "UserPromptSubmit": "prompt",
+         "Stop": "stop", "PreToolUse": "pre-tool"}
+
+
+def claude_settings_file() -> Path:
+    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json"
+
+
+def missing_hooks() -> list[str]:
+    """The `phone hook` events that Claude Code's user settings don't run."""
+    try:
+        hooks = json.loads(claude_settings_file().read_text(encoding="utf-8")).get("hooks") or {}
+    except (OSError, ValueError, AttributeError):
+        hooks = {}
+
+    def wired(event: str, arg: str) -> bool:
+        return any(arg in (h.get("args") or []) or f"hook {arg}" in str(h.get("command", ""))
+                   for entry in hooks.get(event) or [] for h in entry.get("hooks") or [])
+    return [arg for event, arg in HOOKS.items() if not wired(event, arg)]
+
+
 def cmd_status(a) -> None:
     w = config.ip_warning()
     if w:
         print("WARNING:", w)
+    missing = missing_hooks()
+    if missing:
+        print(f"WARNING: Claude Code's settings ({claude_settings_file()}) don't run `phone hook` for "
+              f"{', '.join(missing)}. Copy those hooks from the README's \"Claude Code wiring\".")
     for n in SERVICES:
         pid = _pid(n)
         print(f"{n:9} {'running pid ' + str(pid) if pid else 'stopped'}")
@@ -508,7 +562,7 @@ def main(argv: list[str] | None = None) -> None:
     sp.add_argument("text")
     sp.set_defaults(fn=cmd_type)
     sp = sub.add_parser("hook")
-    sp.add_argument("event", choices=["session-start", "session-end", "prompt", "stop"])
+    sp.add_argument("event", choices=["session-start", "session-end", "prompt", "stop", "pre-tool"])
     sp.set_defaults(fn=cmd_hook)
     sub.add_parser("daemon").set_defaults(fn=cmd_daemon)
     sub.add_parser("prerender", help="render the fixed phrases in the current voice").set_defaults(fn=cmd_prerender)

@@ -5,6 +5,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { autostart } from './autostart';
 import { startBridgeServer, TerminalHost, TerminalInfo } from './server';
 import { entries, fetchSessions, healthLine, SessionEntry, SessionList, statusText, statusTooltip } from './sessions';
 
@@ -13,9 +14,25 @@ const SUBMIT_DELAY_MS = 300;
 const REFRESH_MS = 15_000;
 const DEFAULT_DAEMON_PORT = 8765;
 
+function phoneHome(): string {
+  return process.env.CLAUDE_PHONE_HOME || path.join(os.homedir(), '.claude-phone');
+}
+
 function bridgesDir(): string {
-  const home = process.env.CLAUDE_PHONE_HOME || path.join(os.homedir(), '.claude-phone');
-  return path.join(home, 'bridges');
+  return path.join(phoneHome(), 'bridges');
+}
+
+/** With autostart on, starts claude-phone when it isn't running. The status bar's next refresh shows it. */
+async function startIfWanted(daemonRunning: boolean): Promise<void> {
+  try {
+    if ((await autostart(phoneHome(), daemonRunning)) === 'no-phone') {
+      vscode.window.showWarningMessage(
+        "claude-phone's autostart is on, but VS Code doesn't know where phone.exe is yet: run `phone up` once.");
+    }
+  } catch (err: unknown) {
+    const reason = err instanceof Error ? err.message : String(err);
+    vscode.window.showWarningMessage(`claude-phone's autostart couldn't run \`phone up\`: ${reason}`);
+  }
 }
 
 function delay(ms: number): Promise<void> {
@@ -88,7 +105,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     status.tooltip = statusTooltip(list);
     return list;
   };
-  void refresh();
+  void refresh().then((list) => startIfWanted(list !== undefined));
   const timer = setInterval(() => void refresh(), REFRESH_MS);
 
   const showSessions = vscode.commands.registerCommand('claudePhone.showSessions', async () => {

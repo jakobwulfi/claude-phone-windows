@@ -2,6 +2,7 @@
 # the comment says otherwise. Keys marked [phone config] can also be changed with `phone config set <key> <value>`,
 # `/claude-phone config set …` or by asking Claude; the rest only here. Then run `phone restart daemon`.
 owner_name = "Sam"      # [phone config] spoken and typed as "Sam"; the tools become call_sam and notify_sam
+# autostart = true      # [phone config] on/off; start claude-phone when VS Code opens (default: only by `phone up`)
 # lan_ip = "192.168.1.50"     # default: this PC's address. Pin it once the router reserves it
 # lan_cidr = "192.168.1.0/24" # default: lan_ip's /24. Who may reach the phonebook and DND listener (phonebook_port)
 desk_ext = "200"        # desk phone

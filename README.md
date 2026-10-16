@@ -90,11 +90,16 @@ On any recording: `#` ends it, hanging up also ends it. In voicemail: `#` during
 
 ### Claude Code wiring
 
-Four hooks in `%USERPROFILE%\.claude\settings.json` (replace the path with your clone; merge into an existing
-`"hooks"` key):
+Five hooks in `%USERPROFILE%\.claude\settings.json` (replace the path with your clone; merge into an existing
+`"hooks"` key). The `PreToolUse` one lets Claude enter plan mode without an approval prompt waiting in the terminal, but only
+when you asked for it by phone; typed at the keyboard it asks as usual, and approving the plan always asks. It also
+lets Claude call or message you without a prompt; changing your settings still asks. In plan mode no hook is asked,
+but the call and notify tools are marked read-only, which plan mode lets through without a prompt.
+`phone status` warns about any of these hooks that are missing.
 
 ```json
 "hooks": {
+  "PreToolUse":       [{ "matcher": "EnterPlanMode|mcp__claude-phone__(call|notify)_.*", "hooks": [{ "type": "command", "command": "C:/path/to/claude-phone-windows/.venv/Scripts/phone.exe", "args": ["hook", "pre-tool"] }] }],
   "SessionStart":     [{ "hooks": [{ "type": "command", "command": "C:/path/to/claude-phone-windows/.venv/Scripts/phone.exe", "args": ["hook", "session-start"] }] }],
   "SessionEnd":       [{ "hooks": [{ "type": "command", "command": "C:/path/to/claude-phone-windows/.venv/Scripts/phone.exe", "args": ["hook", "session-end"] }] }],
   "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "C:/path/to/claude-phone-windows/.venv/Scripts/phone.exe", "args": ["hook", "prompt"] }] }],
@@ -194,9 +199,10 @@ app. Pushes pass through the public ntfy.sh server; set `push_text = false` in c
 
 ## Running
 
-Nothing starts at logon. Start claude-phone when you want it: type `/claude-phone` in Claude Code (also
-`/claude-phone down`, `restart` or `status`), or run `phone up`. The services keep running after the Claude
-session that started them ends.
+By default nothing starts by itself. Start claude-phone when you want it: type `/claude-phone` in Claude Code (also
+`/claude-phone down`, `restart` or `status`), or run `phone up`. Or turn on `phone config set autostart on`: then
+the VS Code extension runs `phone up` when a window opens and claude-phone isn't running. The services keep running
+after the Claude session or VS Code window that started them ends.
 
 ```powershell
 phone up               # FreeSWITCH, whisper-server and the daemon (each also: phone up daemon)
@@ -225,6 +231,7 @@ also be changed without opening it, in three ways:
 | `owner_name` | your name, spoken on calls and used in the tool names (`call_<name>`) | up to 40 characters |
 | `ring_seconds` | how long Claude's calls ring before voicemail | 10-40 (ring + answer must fit in 90 s) |
 | `whisper_text` | what the meeting whisper says | up to 120 characters |
+| `autostart` | start claude-phone when VS Code opens (off: only by command) | on / off |
 
 - **Command line:** `phone config` lists them with their values; `phone config get <setting>`,
   `phone config set <setting> <value>`, `phone config unset <setting>` (back to the default).
