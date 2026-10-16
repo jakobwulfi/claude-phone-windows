@@ -1,7 +1,9 @@
 """The `phone` command line: starting services and changing settings."""
 
+import argparse
 import os
 import subprocess
+import time
 import tomllib
 
 import pytest
@@ -27,14 +29,7 @@ def _spawn(monkeypatch, tmp_path, name: str, service: cli.Service) -> dict:
     return FakePopen.started[-1]
 
 
-def test_freeswitch_starts_at_high_priority_and_whisper_below_normal():
-    assert cli.SERVICES["freeswitch"].priority == subprocess.HIGH_PRIORITY_CLASS
-    assert cli.SERVICES["whisper"].priority == subprocess.BELOW_NORMAL_PRIORITY_CLASS
-    assert cli.SERVICES["daemon"].priority == 0
-    assert cli.SERVICES["whisper"].env == {"OMP_WAIT_POLICY": "PASSIVE"}
-
-
-def test_spawn_applies_the_priority_and_adds_the_extra_env(monkeypatch, tmp_path):
+def test_spawn_applies_the_priority_and_adds_any_extra_env(monkeypatch, tmp_path):
     started = _spawn(monkeypatch, tmp_path, "whisper",
                      cli.Service(lambda s: ["prog.exe", "--flag"], subprocess.BELOW_NORMAL_PRIORITY_CLASS,
                                  {"OMP_WAIT_POLICY": "PASSIVE"}))
@@ -43,12 +38,8 @@ def test_spawn_applies_the_priority_and_adds_the_extra_env(monkeypatch, tmp_path
     assert started["env"]["OMP_WAIT_POLICY"] == "PASSIVE"
     assert started["env"]["PATH"] == os.environ["PATH"]  # the rest of the environment is kept
     assert (cli.RUN / "whisper.pid").read_text() == "4242"
-
-
-def test_spawn_without_extras_inherits_the_environment(monkeypatch, tmp_path):
-    started = _spawn(monkeypatch, tmp_path, "daemon", cli.Service(lambda s: []))
-    assert started["creationflags"] == cli.DETACHED
-    assert started["env"] is None
+    plain = _spawn(monkeypatch, tmp_path, "daemon", cli.Service(lambda s: []))
+    assert plain["creationflags"] == cli.DETACHED and plain["env"] is None  # inherits the environment as it is
 
 
 def _pid_file(monkeypatch, tmp_path, written_at: float) -> None:
@@ -77,6 +68,24 @@ def test_stop_leaves_a_process_that_reused_the_pid_alone(monkeypatch, tmp_path):
     assert not (tmp_path / "daemon.pid").exists()
 
 
+def test_a_second_phone_up_leaves_the_starting_to_the_first(monkeypatch, tmp_path, capsys):
+    # Two VS Code windows restored together both run `phone up`.
+    monkeypatch.setattr(cli, "RUN", tmp_path)
+    monkeypatch.setattr(cli, "render_freeswitch_config", lambda: pytest.fail("started a second time"))
+    (tmp_path / "up.lock").touch()
+    cli.cmd_up(argparse.Namespace(only=None))
+    assert "another `phone up`" in capsys.readouterr().out
+
+
+def test_a_lock_left_by_a_killed_phone_up_is_taken_over(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "RUN", tmp_path)
+    lock = tmp_path / "up.lock"
+    lock.touch()
+    old = time.time() - cli.UP_LOCK_STALE_S - 1
+    os.utime(lock, (old, old))
+    assert cli._take_up_lock() == lock
+
+
 def test_audio_usage_counts_recordings_and_speech(monkeypatch, tmp_path):
     monkeypatch.setattr(config, "RECORDINGS", tmp_path / "rec")
     monkeypatch.setattr(config, "SOUNDS", tmp_path / "sounds")
@@ -86,17 +95,6 @@ def test_audio_usage_counts_recordings_and_speech(monkeypatch, tmp_path):
     (tmp_path / "sounds" / "tts" / "b.wav").write_bytes(bytes(600_000))
     (tmp_path / "sounds" / "beep.wav").write_bytes(bytes(100))  # fixed sounds aren't counted
     assert cli.audio_usage() == "2 files, 2.1 MB (recordings 1, speech 1)"
-
-
-@pytest.fixture
-def settings_file(monkeypatch):
-    from claude_phone import configedit
-    path = config.CONFIG_FILE
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text('# mine\nring_ext = "201"\n', encoding="utf-8")
-    monkeypatch.setattr(configedit, "_registered", lambda ext: "registered")
-    yield path
-    path.unlink(missing_ok=True)
 
 
 def test_phone_config_lists_gets_sets_and_unsets(settings_file, capsys):

@@ -146,6 +146,12 @@ def test_an_unknown_time_zone_is_skipped_not_guessed():
     assert [m.key.split("@")[0] for m in ms] == ["ok"]
 
 
+def test_the_summary_names_a_few_people_by_first_name():
+    start = datetime(2026, 10, 20, 9, tzinfo=UTC)
+    m = diary.Meeting("k", "Sync", start, start + timedelta(minutes=30), ("Ann Lee", "bob@x.com", "Cy Ng", "Di Fox"))
+    assert diary.summary(m)[1].startswith("with Ann, bob +2\n")
+
+
 def test_calendar_email_wins_over_the_feeds_name():
     body = ics(event("x", "DTSTART:20261020T090000Z", "DTEND:20261020T100000Z",
                      "ATTENDEE;PARTSTAT=DECLINED:mailto:work@corp.example"), name="Calendar")
@@ -241,18 +247,23 @@ def test_a_meeting_in_both_calendars_alerts_once(feeds):
     assert len(diary.meetings(NOW, NOW + timedelta(days=1))) == 1
 
 
-def test_a_keychain_failure_keeps_the_last_meetings_and_waits_for_the_next_refresh(feeds, monkeypatch):
+@pytest.mark.parametrize("failure", ["keychain", "network"])
+def test_a_failed_refresh_keeps_the_last_meetings_and_reports_why_without_the_link(feeds, monkeypatch, failure):
     s, links, clock, served, asked = feeds
     s.calendar_sources = ["google"]
     served["google"] = ics(event("g", "DTSTART:20261020T110000Z", "DTEND:20261020T113000Z"))
     diary.meetings(NOW, NOW + timedelta(days=1))
-
-    def broken(name):
-        raise RuntimeError("Credential Manager unavailable")
-    monkeypatch.setattr(diary.keychain, "get", broken)
+    if failure == "keychain":
+        def broken(name):
+            raise RuntimeError("Credential Manager unavailable")
+        monkeypatch.setattr(diary.keychain, "get", broken)
+    else:
+        served["google"] = urllib.error.URLError("no network")
     clock["now"] = NOW + timedelta(minutes=6)
     assert len(diary.meetings(NOW, NOW + timedelta(days=1))) == 1
-    assert "Credential Manager" in {x["source"]: x for x in diary.status()}["google"]["error"]
+    error = {x["source"]: x for x in diary.status()}["google"]["error"]
+    assert {"keychain": "Credential Manager", "network": "no network"}[failure] in error
+    assert "g.example" not in error
 
 
 def test_an_unchanged_feed_is_not_parsed_again(feeds, monkeypatch):
@@ -322,18 +333,6 @@ def test_redirects_must_stay_on_https(monkeypatch):
     serve(monkeypatch, b"x", url="http://g.example/basic.ics")
     with pytest.raises(ValueError, match="https"):
         diary._fetch("https://g.example/basic.ics", None, None)
-
-
-def test_a_failed_refetch_keeps_the_last_good_meetings(feeds):
-    s, links, clock, served, asked = feeds
-    s.calendar_sources = ["google"]
-    served["google"] = ics(event("g", "DTSTART:20261020T110000Z", "DTEND:20261020T113000Z"))
-    diary.meetings(NOW, NOW + timedelta(days=1))
-    clock["now"] = NOW + timedelta(minutes=6)
-    served["google"] = urllib.error.URLError("no network")
-    assert len(diary.meetings(NOW, NOW + timedelta(days=1))) == 1
-    st = {x["source"]: x for x in diary.status()}["google"]
-    assert "no network" in st["error"] and "g.example" not in st["error"]
 
 
 def test_a_changed_link_starts_over(feeds):

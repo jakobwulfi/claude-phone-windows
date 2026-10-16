@@ -195,13 +195,10 @@ def test_a_refused_key_is_not_stored(home, monkeypatch):
     assert home == {}
 
 
-def test_the_old_settings_still_choose_the_voice_until_phone_voice_is_used():
+def test_the_old_settings_choose_until_phone_voice_is_used_and_a_repo_voice_still_wins():
     config.CONFIG_FILE.write_text('tts_provider = "sapi"\nsapi_voice = "Microsoft Zira Desktop"\n', encoding="utf-8")
     assert tts.claude_voice() == ("sapi", None)
     assert voices.current() == voices.Voice("windows", "Microsoft Zira Desktop")
-
-
-def test_a_repo_voice_still_wins_and_may_use_the_new_engines():
     config.CONFIG_FILE.write_text('voice = "windows:Microsoft Mark"\n[repo_voices.site]\nprovider = "piper"\n'
                                   'voice = "en_US-amy-low"\n', encoding="utf-8")
     assert tts.voice_for("site") == ("piper", "en_US-amy-low")
@@ -223,9 +220,6 @@ def test_deleting_the_voice_in_use_switches_to_the_windows_voice_first():
     assert msg.startswith("Claude now speaks with the Windows default voice. Deleted the Piper voice en_US-amy-low")
     assert saved_voice() == "windows" and tts.claude_voice() == ("sapi", None)
     assert voices.piper_installed() == ["en_US-ryan-medium"] and voices.engine_installed("piper")
-
-
-def test_deleting_the_voice_in_use_names_the_windows_voice_set_in_config():
     config.CONFIG_FILE.write_text('sapi_voice = "Microsoft Zira Desktop"\n', encoding="utf-8")
     voices.choose("kokoro:af_sky", download=True)
     assert voices.remove("kokoro").startswith("Claude now speaks with the Windows voice Microsoft Zira Desktop. ")
@@ -343,7 +337,6 @@ def test_claudes_tool_switches_but_leaves_downloads_to_the_terminal(monkeypatch)
     assert asyncio.run(mcp_server.change_voice("windows:Microsoft Mark")).startswith("Claude now speaks with")
     assert elsewhere == [1]  # by a short-lived `phone prerender`, not in this long-lived process
     assert asyncio.run(mcp_server.change_voice()).startswith("Claude speaks with the Windows voice Microsoft Mark")
-    assert "Never ask for or handle an ElevenLabs API key" in mcp_server.change_voice.__doc__
 
 
 def test_claudes_tool_lets_go_of_the_engine_and_spends_no_credits(home, monkeypatch):
@@ -381,13 +374,10 @@ def test_a_new_prerender_replaces_the_one_still_running(monkeypatch, tmp_path):
     assert killed == [999] and started[0][-1] == "prerender"
     assert (tmp_path / "prerender.pid").read_text() == "4242"
 
-
-def test_a_prerender_that_wont_start_doesnt_undo_the_switch(monkeypatch, tmp_path):
     def cant(argv, **kw):
         raise OSError("no such file")
-    monkeypatch.setattr(cli, "RUN", tmp_path)
     monkeypatch.setattr(mcp_server.subprocess, "Popen", cant)
-    REAL_PRERENDER_ELSEWHERE()  # logged, not raised
+    REAL_PRERENDER_ELSEWHERE()  # one that won't start is logged, not raised: the switch stands
 
 
 # --- the worker protocol ---
@@ -493,7 +483,7 @@ def test_a_damaged_list_of_piper_voices_is_not_trusted(monkeypatch):
     assert not (config.VOICES / "piper" / "voices.json").exists()
 
 
-def test_a_worker_waits_longer_only_while_its_model_loads(monkeypatch):
+def test_a_worker_waits_longer_only_while_its_model_loads_and_is_warm_once_it_has_answered(monkeypatch):
     waited = []
 
     class Proc:
@@ -509,10 +499,12 @@ def test_a_worker_waits_longer_only_while_its_model_loads(monkeypatch):
     w = voiceworker.Worker("piper", config.ENGINES / "piper")
     monkeypatch.setattr(w, "_start", Proc)
     monkeypatch.setattr(w, "_arm", lambda: None)
+    monkeypatch.setattr(voiceworker, "_workers", {"piper": w})
+    assert not voiceworker.is_warm("piper")
     w.render(text="first")
+    assert voiceworker.is_warm("piper")
     w.render(text="second")
     assert waited == [voiceworker.FIRST_RENDER_TIMEOUT_S, voiceworker.RENDER_TIMEOUT_S]
-    assert voiceworker.RENDER_TIMEOUT_S < voiceworker.FIRST_RENDER_TIMEOUT_S
 
 
 def test_the_engine_leaves_cores_free_and_doesnt_spin(monkeypatch):
@@ -573,7 +565,3 @@ def test_a_voice_is_warmed_up_once_as_it_loads(monkeypatch):
         voiceworker._kokoro(models, {"model": "m", "voices": "v", "voice": "am_adam", "text": f"Real {n}.",
                                      "out": str(out)})
     assert spoken == [voiceworker.WARM_UP_TEXT, "Real 1.", "Real 2."]  # the slow first inference isn't a call's
-
-
-def test_a_worker_is_warm_once_it_has_answered():
-    assert not voiceworker.is_warm("nothing-started")

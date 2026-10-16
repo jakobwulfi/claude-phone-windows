@@ -120,17 +120,16 @@ def test_session_without_a_terminal_is_not_typed_into(bridge):
     assert bridge.typed == []
 
 
-def test_live_terminals_come_from_every_window(bridge):
-    other = FakeBridge({5151})
+def test_live_terminals_come_from_every_window():
+    assert inject.live_term_ids() == set()  # no VS Code window open
+    one, other = FakeBridge({SHELL_PID}), FakeBridge({5151})
+    _write_bridge("window", one.port)
     _write_bridge("other-window", other.port)
     try:
         assert inject.live_term_ids() == {f"vscode:{SHELL_PID}", "vscode:5151"}
     finally:
+        one.close()
         other.close()
-
-
-def test_no_vscode_window_means_no_live_terminals():
-    assert inject.live_term_ids() == set()
 
 
 def test_window_that_does_not_answer_raises_so_the_sweep_is_skipped():

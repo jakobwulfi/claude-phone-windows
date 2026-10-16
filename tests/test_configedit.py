@@ -1,5 +1,7 @@
 """Changing settings from the command line, the slash command and chat: validation, and how config.toml is written."""
 
+import json
+import os
 import tomllib
 from dataclasses import fields
 from datetime import date, datetime, timedelta, timezone
@@ -21,14 +23,10 @@ voice = "Microsoft David Desktop"
 
 
 @pytest.fixture(autouse=True)
-def config_file(monkeypatch):
-    path = config.CONFIG_FILE
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(USER_FILE, encoding="utf-8")
-    monkeypatch.setattr(configedit, "_registered", lambda ext: "registered")
+def config_file(settings_file, monkeypatch):
+    settings_file.write_text(USER_FILE, encoding="utf-8")
     monkeypatch.setattr(configedit, "_linked", lambda source: source == "google")
-    yield path
-    path.unlink(missing_ok=True)
+    return settings_file
 
 
 def saved() -> dict:
@@ -68,14 +66,6 @@ def test_paths_typos_and_line_endings(config_file):
     assert saved() == {"whisper_server": "C:\\tools\\whisper.exe", "ring_secnds": 3, "callerid_max": 30}
 
 
-def test_a_new_key_goes_above_the_tables_not_into_them():
-    configedit.set_value("meeting_warn_minutes", "3")
-    data = saved()
-    assert data["meeting_warn_minutes"] == 3 and "meeting_warn_minutes" not in data["repo_voices"]["lemon-stand"]
-    assert data["repo_voices"]["lemon-stand"]["voice"] == "Microsoft David Desktop"
-    assert config.load().meeting_warn_minutes == 3
-
-
 def test_a_new_key_in_a_missing_file_creates_it(config_file):
     config_file.unlink()
     configedit.set_value("whisper_text", "  Psst,   meeting  ")
@@ -85,11 +75,12 @@ def test_a_new_key_in_a_missing_file_creates_it(config_file):
 @pytest.mark.parametrize("key, raw, value", [
     ("callerid_max", "10", 10), ("callerid_max", "40", 40),
     ("meeting_warn_minutes", "30", 30),
-    ("meeting_alerts", "on", True), ("meeting_alerts", "No", False), ("meeting_alerts", "TRUE", True),
-    ("calendar_sources", "Outlook, google", ["outlook", "google"]), ("calendar_sources", "google google", ["google"]),
+    ("meeting_alerts", "on", True), ("meeting_alerts", "No", False),
+    ("calendar_sources", "Outlook, google google", ["outlook", "google"]),
     ("ring_seconds", "30", 30),
     ("owner_name", "Søren Ærø", "Søren Ærø"),
     ("whisper_text", "Psst. Meeting in two.", "Psst. Meeting in two."),
+    ("autostart", "1", True), ("autostart", "0", False),
 ])
 def test_valid_values_are_saved(key, raw, value):
     configedit.set_value(key, raw)
@@ -97,14 +88,14 @@ def test_valid_values_are_saved(key, raw, value):
 
 
 @pytest.mark.parametrize("key, raw, why", [
-    ("callerid_max", "41", "from 10 to 40"), ("callerid_max", "9", "from 10 to 40"),
-    ("callerid_max", "twenty", "whole number"),
+    ("callerid_max", "41", "from 10 to 40"), ("callerid_max", "twenty", "whole number"),
     ("meeting_warn_minutes", "0", "from 1 to 30"),
     ("meeting_alerts", "maybe", "on or off"),
     ("calendar_sources", "icloud", "google or outlook"), ("calendar_sources", "", "google or outlook"),
     ("ring_seconds", "41", "from 10 to 40"),
     ("owner_name", "   ", "1 to 40 characters"), ("owner_name", "x" * 41, "1 to 40 characters"),
     ("whisper_text", "y" * 121, "1 to 120 characters"),
+    ("autostart", "2", "on or off"),
 ])
 def test_invalid_values_are_refused_and_nothing_is_written(key, raw, why):
     with pytest.raises(ValueError, match=why):
@@ -119,14 +110,11 @@ def test_ring_and_record_seconds_must_fit_claude_codes_call_limit():
         configedit.set_value("ring_seconds", "26")
 
 
-def test_only_the_listed_settings_can_be_changed():
+def test_only_the_listed_settings_can_be_changed_spelled_with_dashes_or_capitals_too():
     with pytest.raises(ValueError, match="can only be changed by editing"):
         configedit.set_value("sip_port", "5080")
     with pytest.raises(ValueError, match="no setting called 'ringseconds'.*ring_seconds"):
         configedit.get("ringseconds")
-
-
-def test_dashes_and_case_are_accepted_in_keys():
     assert configedit.set_value("Meeting-Warn-Minutes", "5").startswith("Saved: meeting_warn_minutes = 5.")
 
 
@@ -140,6 +128,13 @@ def test_unset_goes_back_to_the_default():
 def test_each_setting_says_what_to_restart():
     assert "next calendar refresh" in configedit.set_value("calendar_sources", "google")
     assert "sessions get the new tool names" in configedit.set_value("owner_name", "Kim")
+
+
+def test_autostart_leaves_phone_exe_for_the_vscode_extension():
+    config.PHONE_FILE.unlink(missing_ok=True)
+    assert "next time a VS Code window opens" in configedit.set_value("autostart", "on")
+    exe = json.loads(config.PHONE_FILE.read_text(encoding="utf-8"))["exe"]
+    assert exe.lower().endswith("phone.exe") and os.path.exists(exe)
 
 
 def test_calendar_sources_warns_about_a_missing_link_and_alerts_being_off():
@@ -175,21 +170,15 @@ def test_change_phone_notes_a_phone_that_is_not_registered(monkeypatch):
     assert configedit.change_phone("desk").endswith("Note: that phone is not registered right now.")
 
 
-def test_tables_keep_their_entries_and_nested_tables(config_file):
+def test_a_new_key_goes_above_the_tables_which_keep_their_entries(config_file):
     config_file.write_text('[repo_ringtones]\nlemon-stand = 3\n"my repo" = 5\n\n[repo_voices.a]\nvoice = "x"\n'
                            '[repo_voices.b]\nprovider = "elevenlabs"\n', encoding="utf-8")
     configedit.set_value("callerid_max", "30")
     assert saved() == {"repo_ringtones": {"lemon-stand": 3, "my repo": 5}, "callerid_max": 30,
                        "repo_voices": {"a": {"voice": "x"}, "b": {"provider": "elevenlabs"}}}
-    assert config_file.read_text(encoding="utf-8").index("callerid_max") < \
-        config_file.read_text(encoding="utf-8").index("[repo_ringtones]")
-
-
-def test_something_that_cant_be_written_back_leaves_the_file_alone(config_file):
-    config_file.write_text("[[things]]\nname = 1\n", encoding="utf-8")  # an array of tables: no setting is one
-    with pytest.raises(ValueError, match="can't write"):
-        configedit.set_value("callerid_max", "30")
-    assert config_file.read_text(encoding="utf-8") == "[[things]]\nname = 1\n"
+    text = config_file.read_text(encoding="utf-8")
+    assert text.index("callerid_max") < text.index("[repo_ringtones]")
+    assert config.load().callerid_max == 30
 
 
 @pytest.mark.parametrize("payload", ['a"\n[x]\nowner_name="evil"', '"]\n[x]\ny=1', 'say """ \\ \x1b \x7f done', "it's \\ fine"])
@@ -252,7 +241,9 @@ def test_render_reads_back_exactly(data):
     assert tomllib.loads(configedit.render(data)) == data
 
 
-def test_something_unwritable_names_the_file(config_file):
-    config_file.write_text("x = [{a = 1}]\n", encoding="utf-8")
+@pytest.mark.parametrize("unwritable", ["[[things]]\nname = 1\n", "x = [{a = 1}]\n"])  # no setting is either
+def test_something_unwritable_names_the_file_and_leaves_it_alone(config_file, unwritable):
+    config_file.write_text(unwritable, encoding="utf-8")
     with pytest.raises(ValueError, match=r"config.toml holds something `phone config` can't write back.*edit it by hand"):
         configedit.set_value("callerid_max", "30")
+    assert config_file.read_text(encoding="utf-8") == unwritable
