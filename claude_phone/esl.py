@@ -14,8 +14,9 @@ from typing import Any, Callable
 from . import log
 
 # The events the daemon waits on. CHANNEL_PARK: a phone dialled something the dial plan hands to us.
-EVENTS = ("CHANNEL_PARK CHANNEL_ANSWER CHANNEL_HANGUP CHANNEL_EXECUTE_COMPLETE DTMF BACKGROUND_JOB "
-          "CUSTOM sofia::register sofia::unregister sofia::expire")
+# CHANNEL_HANGUP_COMPLETE carries each leg's audio statistics, which the daemon logs.
+EVENTS = ("CHANNEL_PARK CHANNEL_ANSWER CHANNEL_HANGUP CHANNEL_HANGUP_COMPLETE CHANNEL_EXECUTE_COMPLETE DTMF "
+          "BACKGROUND_JOB CUSTOM sofia::register sofia::unregister sofia::expire")
 COMMAND_TIMEOUT_S = 10
 RECONNECT_S = 2
 # Energy below which a frame counts as silence for `record`'s max_silence; line noise sits well under it.

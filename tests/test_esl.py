@@ -106,6 +106,7 @@ def test_logs_in_and_subscribes(tmp_path):
     first, second = run(go())[:2]
     assert first == f"auth {PASSWORD}"
     assert second.startswith("event json ") and "CHANNEL_PARK" in second and "sofia::register" in second
+    assert "CHANNEL_HANGUP_COMPLETE" in second.split()
 
 
 def test_wrong_password_never_connects(tmp_path):
@@ -297,3 +298,32 @@ def test_ring_reports_why_an_unanswered_call_failed(tmp_path):
         fs.close()
         return result
     assert run(go()) == (None, "not answered (NO_ANSWER)")
+
+
+HANGUP_COMPLETE = {
+    "Event-Name": "CHANNEL_HANGUP_COMPLETE", "Unique-ID": "3f2a9c1e-0000", "Call-Direction": "outbound",
+    "Caller-Destination-Number": "201", "variable_read_codec": "PCMU", "variable_read_rate": "8000",
+    "variable_write_codec": "PCMU", "variable_rtp_audio_in_packet_count": "1500",
+    "variable_rtp_audio_in_skip_packet_count": "3", "variable_rtp_audio_in_jitter_packet_count": "12",
+    "variable_rtp_audio_in_flaw_total": "2", "variable_rtp_audio_in_mos": "4.38",
+    "variable_rtp_audio_in_jitter_max_variance": "21.50", "variable_rtp_audio_out_packet_count": "1498",
+    "variable_rtp_audio_out_skip_packet_count": "0",
+}
+
+
+def test_call_stats_sums_up_a_leg_in_one_line():
+    line = daemon.call_stats(HANGUP_COMPLETE)
+    assert line.startswith("audio 201 outbound 3f2a9c1e:")
+    for part in ("codec=PCMU/8000", "write=PCMU", "in_pkts=1500", "in_skip=3", "in_jitter=12", "in_flaws=2",
+                 "mos=4.38", "jitter_var=21.50", "out_pkts=1498", "out_skip=0"):
+        assert part in line.split()
+
+
+def test_call_stats_marks_missing_values_and_skips_legs_without_media():
+    partial = {k: v for k, v in HANGUP_COMPLETE.items() if k != "variable_rtp_audio_in_mos"}
+    assert "mos=?" in daemon.call_stats(partial).split()
+    one_way = {k: v for k, v in HANGUP_COMPLETE.items() if "rtp_audio_in" not in k}  # the phone sent nothing
+    assert "in_pkts=? " in daemon.call_stats(one_way) and "out_pkts=1498" in daemon.call_stats(one_way)
+    no_media = {k: v for k, v in HANGUP_COMPLETE.items() if "rtp_audio" not in k}
+    assert daemon.call_stats(no_media) is None
+    assert daemon.call_stats({**HANGUP_COMPLETE, "Event-Name": "CHANNEL_HANGUP"}) is None

@@ -64,6 +64,32 @@ def browser_xml(sessions: list[registry.Session], s: config.Settings) -> str:
             f"<Title>{escape(title)}</Title>{items}</YealinkIPPhoneDirectory>")
 
 
+# Per-leg audio counters FreeSWITCH reports at hangup, as (label, channel variable). "skip" counts packets FreeSWITCH
+# skipped, "jitter" the packets in its jitter statistics; neither is network loss as such.
+CALL_STATS = (
+    ("in_pkts", "rtp_audio_in_packet_count"), ("in_skip", "rtp_audio_in_skip_packet_count"),
+    ("in_jitter", "rtp_audio_in_jitter_packet_count"), ("in_flaws", "rtp_audio_in_flaw_total"),
+    ("mos", "rtp_audio_in_mos"), ("jitter_var", "rtp_audio_in_jitter_max_variance"),
+    ("out_pkts", "rtp_audio_out_packet_count"), ("out_skip", "rtp_audio_out_skip_packet_count"),
+)
+
+
+def call_stats(ev: dict) -> str | None:
+    """One log line on a finished leg's audio (codec, packets, loss, jitter), for diagnosing choppy voice.
+    None for other events and for legs that never carried audio."""
+    if ev.get("Event-Name") != "CHANNEL_HANGUP_COMPLETE":
+        return None
+    if not any(f"variable_rtp_audio_{d}_packet_count" in ev for d in ("in", "out")):
+        return None
+
+    def var(name: str) -> str:
+        return ev.get(f"variable_{name}") or "?"
+    counters = " ".join(f"{label}={var(name)}" for label, name in CALL_STATS)
+    return (f"audio {ev.get('Caller-Destination-Number', '?')} {ev.get('Call-Direction', '?')} "
+            f"{ev.get('Unique-ID', '?')[:8]}: codec={var('read_codec')}/{var('read_rate')} "
+            f"write={var('write_codec')} {counters}")
+
+
 def caller_id(label: str, limit: int) -> str:
     """Fit repo/branch onto the T31P screen: drop branch prefixes (feat/), then trim the branch, then the repo."""
     if len(label) <= limit:
@@ -216,6 +242,11 @@ class Controller:
 
     def on_event(self, ev: dict) -> None:
         name = ev.get("Event-Name")
+        if name == "CHANNEL_HANGUP_COMPLETE":
+            stats = call_stats(ev)
+            if stats:
+                lg.info(stats)
+            return
         if name == "CUSTOM" and ev.get("Event-Subclass", "").startswith("sofia::"):
             # Re-registrations repeat every few minutes; only a return from offline needs the light resent.
             ext = ev.get("from-user") or ev.get("username") or ev.get("user")

@@ -115,3 +115,36 @@ from the ICS feed that Google Calendar and Outlook publish (`claude_phone/diary.
 - **Text to speech:** the Windows voices through System.Speech, rendered straight to 16 kHz mono WAV; the text is
   passed outside the PowerShell script, never spliced into it. ElevenLabs is optional and falls back to Windows
   speech if it fails.
+
+## 10. Choppy or slow voice
+
+The daemon isn't in the audio path: each phrase is rendered to a WAV first, and FreeSWITCH streams it to the phone
+itself. So a voice that stutters (gaps, repeats) or drags (slows down, then catches up) comes from FreeSWITCH, the
+network or the phone, or from the PC's CPU scheduling.
+
+- **What `phone up` does about it.** FreeSWITCH starts at high priority, so its 20 ms packet clock isn't starved,
+  and whisper-server below normal, with `OMP_WAIT_POLICY=PASSIVE` so its threads sleep after a transcription instead
+  of spinning. Measured on a Ryzen 5 5500: without it, whisper kept about one core busy for ~0.5 s after each answer,
+  just as the reply starts playing; with it, nothing.
+- **Read the per-call line.** At every hangup `phone.log` gets one line per leg:
+  `audio 201 outbound 3f2a9c1e: codec=PCMU/8000 write=PCMU in_pkts=… in_skip=… in_jitter=… in_flaws=… mos=…
+  jitter_var=… out_pkts=… out_skip=…`.
+  - `codec`: `G722/16000` is wideband; `PCMU/8000` means the phone has G.722 off and FreeSWITCH resamples every
+    phrase.
+  - `in_*` and `mos` describe audio *from* the phone, as FreeSWITCH received it. They hint at how the network and
+    the phone's clock behave; how our voice sounds at the phone also depends on the phone's own jitter buffer.
+    `mos` (FreeSWITCH's estimate) runs from 1 to 4.5; below ~4 is usually audible.
+  - `in_skip`/`out_skip` count packets FreeSWITCH skipped, and `in_jitter` the packets in its jitter statistics;
+    none of these is network loss as such. A rising `out_skip` suggests FreeSWITCH fell behind its send clock, so
+    look at CPU load.
+- **Linphone on the same PC.**
+  1. Enable G.722 (Preferences → Audio → Codecs). It's off by default, so calls fall back to PCMU.
+  2. Linphone's adaptive jitter buffer (`audio_adaptive_jitt_comp_enabled=1`, `audio_jitt_comp=60` in
+     `%LOCALAPPDATA%\linphone\linphonerc`) stretches audio when packets arrive unevenly, which sounds like
+     dragging. Only if the voice still drags: close Linphone, then set `audio_adaptive_jitt_comp_enabled=0` and/or
+     raise `audio_jitt_comp`.
+  3. Linphone shows its own codec, jitter and loss figures during a call (the call's statistics view).
+- **"Reverse Clock Skew Detected"** in `freeswitch/log/freeswitch.log` means the Windows clock jumped under
+  FreeSWITCH's timer. If those lines line up with stutters, look at Windows time sync.
+- **A desk phone** (the T31P, G.722 first) avoids most of this: no jitter buffer competing on the same PC and no
+  resampling.

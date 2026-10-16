@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
 import time
 import urllib.request
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 import psutil
 
@@ -76,13 +79,24 @@ def _pid(name: str) -> int | None:
     return pid if psutil.pid_exists(pid) else None
 
 
-def _spawn(name: str, argv: list[str]) -> None:
+@dataclass(frozen=True)
+class Service:
+    argv: Callable[[config.Settings], list[str]]
+    # A Windows priority class, set as the process starts. HIGH needs no admin rights (only REALTIME does).
+    priority: int = 0
+    env: dict[str, str] = field(default_factory=dict)  # added to the environment
+
+
+def _spawn(name: str, svc: Service, s: config.Settings) -> None:
     if _pid(name):
         print(f"{name}: already running")
         return
     RUN.mkdir(parents=True, exist_ok=True)
-    out = open(config.LOGS / f"{name}.out", "a")
-    p = subprocess.Popen(argv, stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, creationflags=DETACHED)
+    env = {**os.environ, **svc.env} if svc.env else None
+    # The child keeps its own handle to the output file.
+    with open(config.LOGS / f"{name}.out", "a") as out:
+        p = subprocess.Popen(svc.argv(s), stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                             creationflags=DETACHED | svc.priority, env=env)
     (RUN / f"{name}.pid").write_text(str(p.pid))
     print(f"{name}: started (pid {p.pid})")
 
@@ -130,11 +144,16 @@ def whisper_server(s: config.Settings) -> str:
 # Physical cores: whisper gains nothing from hyperthreads.
 WHISPER_THREADS = psutil.cpu_count(logical=False) or 4
 
+# FreeSWITCH plays every call's audio on a 20 ms clock, so it runs above everything else on the PC, while whisper's
+# bursts run below it. OMP_WAIT_POLICY=PASSIVE: whisper's threads sleep after a transcription instead of spinning
+# (measured: about one core for ~0.5 s after each answer without it, nothing with it).
 SERVICES = {
-    "freeswitch": freeswitch_argv,
-    "whisper": lambda s: [whisper_server(s), "-m", str(model_path()), "--host", "127.0.0.1", "--port", str(s.whisper_port),
-                          "-t", str(WHISPER_THREADS), "--no-timestamps", "-l", s.whisper_language],
-    "daemon": lambda s: py_argv("daemon"),
+    "freeswitch": Service(freeswitch_argv, subprocess.HIGH_PRIORITY_CLASS),
+    "whisper": Service(lambda s: [whisper_server(s), "-m", str(model_path()), "--host", "127.0.0.1",
+                                  "--port", str(s.whisper_port), "-t", str(WHISPER_THREADS), "--no-timestamps",
+                                  "-l", s.whisper_language],
+                       subprocess.BELOW_NORMAL_PRIORITY_CLASS, {"OMP_WAIT_POLICY": "PASSIVE"}),
+    "daemon": Service(lambda s: py_argv("daemon")),
 }
 
 
@@ -145,7 +164,7 @@ def cmd_up(a) -> None:
     ensure_model()
     names = [a.only] if a.only else list(SERVICES)
     for n in names:
-        _spawn(n, SERVICES[n](s))
+        _spawn(n, SERVICES[n], s)
         if n == "freeswitch":
             time.sleep(3)
         if n == "whisper":

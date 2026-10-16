@@ -1,5 +1,6 @@
-"""Text to speech with swappable providers. Output is 16 kHz mono 16-bit WAV, which FreeSWITCH plays without
-resampling on G.722 calls. Results are cached by content hash. Paths use forward slashes, as FreeSWITCH wants."""
+"""Text to speech with swappable providers. Output is 16 kHz mono 16-bit WAV: FreeSWITCH plays it as is on a G.722
+call and resamples it to 8 kHz on PCMU/PCMA, which a phone without G.722 enabled falls back to. Results are cached
+by content hash. Paths use forward slashes, as FreeSWITCH wants."""
 
 from __future__ import annotations
 
