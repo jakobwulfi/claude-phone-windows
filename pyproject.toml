@@ -4,8 +4,7 @@ version = "0.1.0"
 description = "A desk phone line between you and your Claude Code sessions"
 license = "MIT"
 requires-python = ">=3.12"
-# tomlkit (~50 KB, pure Python): `phone config set` keeps config.toml's comments; imported only when writing it.
-dependencies = ["aiohttp>=3.9", "mcp>=2.3,<3", "psutil>=5.9", "keyring>=25", "tomlkit>=0.13"]
+dependencies = ["aiohttp>=3.9", "mcp>=2.3,<3", "psutil>=5.9", "keyring>=25"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

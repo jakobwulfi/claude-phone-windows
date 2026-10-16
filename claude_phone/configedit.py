@@ -1,9 +1,11 @@
 """The settings a user may change from `phone config`, /claude-phone config and chat, and `change_phone`.
-config.toml is rewritten with tomlkit, so its comments and order survive. Nothing restarts: each change says
-what has to be restarted for it to apply."""
+A change writes config.toml again with a comment on each line saying what that setting is for. Nothing restarts:
+each change says what has to be restarted for it to apply."""
 
 from __future__ import annotations
 
+import datetime
+import json
 import os
 import re
 import tempfile
@@ -191,47 +193,76 @@ def _linked(source: str) -> bool:
 
 
 def _write(key: str, value: Any) -> None:
-    """Sets one top-level key (None removes it), keeping the rest of the file (comments, order, line endings) as it
-    was. The result is read back and checked before it replaces the file."""
-    import tomlkit
-    from tomlkit.items import AoT, Table
+    """Sets one top-level key (None removes it) and writes config.toml again, each line with a comment saying
+    what the setting is for. The result is read back and checked before it replaces the file."""
     path = config.CONFIG_FILE
     old = path.read_bytes().decode("utf-8") if path.exists() else ""
-    doc = tomlkit.parse(old)
-    if isinstance(doc.get(key), (Table, AoT)):
+    data = tomllib.loads(old)
+    if isinstance(data.get(key), dict):
         raise ValueError(f"{key} is a [table] in {path}; fix that by hand")
     if value is None:
-        doc.pop(key, None)
-        new = doc.as_string()
-    elif key in doc:
-        doc[key] = value
-        new = doc.as_string()
+        data.pop(key, None)
     else:
-        new = _add_top_level(old, key, value)
-    expected = {k: v for k, v in tomllib.loads(old).items() if k != key}
-    if value is not None:
-        expected[key] = value
-    if tomllib.loads(new) != expected:
-        raise ValueError(f"couldn't place {key} in {path} safely; set it there by hand")
+        data[key] = value
+    try:
+        new = render(data, "\r\n" if "\r\n" in old else "\n")
+    except ValueError as e:
+        raise ValueError(f"{path.name} holds something `phone config` can't write back ({e}); "
+                         "edit it by hand") from None
+    if tomllib.loads(new) != data:
+        raise ValueError(f"couldn't write {key} to {path} safely; set it there by hand")
     _replace(path, new.encode("utf-8"))
 
 
-def _add_top_level(text: str, key: str, value: Any) -> str:
-    """A new key goes just after the last top-level key: below a [table] header TOML would read it as part of that
-    table, and a comment just above a table belongs to the table."""
-    import tomlkit
-    eol = "\r\n" if "\r\n" in text else "\n"
-    lines = text.splitlines(keepends=True)
-    if lines and not lines[-1].endswith("\n"):
-        lines[-1] += eol
-    first_table = next((i for i, line in enumerate(lines) if line.lstrip().startswith("[")), len(lines))
-    at = first_table
-    while at and (not lines[at - 1].strip() or lines[at - 1].lstrip().startswith("#")):
-        at -= 1
-    if at == 0:  # only comments above the first table: they head the file, so the key goes just above the table
-        at = first_table
-    entry = tomlkit.dumps({key: value}).rstrip("\n") + eol
-    return "".join(lines[:at] + [entry] + lines[at:])
+HEADER = "# claude-phone settings. `phone config` changes the common ones; config.example.toml lists them all."
+TYPO = "not a claude-phone setting, so it's ignored (a typo?)"
+COMMENT_COLUMN = 40
+_BARE_KEY = re.compile(r"[A-Za-z0-9_-]+")
+_LITERAL = re.compile(r"[^'\x00-\x1f\x7f]*")  # fits in a TOML 'literal string' as it is
+
+
+def render(data: dict, eol: str = "\n") -> str:
+    """config.toml for these settings: the plain ones first, each with what it's for, then the [tables]."""
+    lines = [HEADER]
+    for k, v in data.items():
+        if not isinstance(v, dict):
+            line = f"{_toml_key(k)} = {_toml_value(v)}"
+            lines.append(f"{line.ljust(COMMENT_COLUMN - 2)}  # {config.DESCRIPTIONS.get(k, TYPO)}")
+    for k, v in data.items():
+        if isinstance(v, dict):
+            lines += ["", f"# {config.DESCRIPTIONS.get(k, TYPO)}", *_table([k], v)]
+    return eol.join(lines) + eol
+
+
+def _table(path: list[str], table: dict) -> list[str]:
+    entries = [f"{_toml_key(k)} = {_toml_value(v)}" for k, v in table.items() if not isinstance(v, dict)]
+    only_subtables = table and not entries
+    lines = [] if only_subtables else [f"[{'.'.join(map(_toml_key, path))}]", *entries]
+    for k, v in table.items():
+        if isinstance(v, dict):
+            lines += _table([*path, k], v)
+    return lines
+
+
+def _toml_key(key: str) -> str:
+    return key if _BARE_KEY.fullmatch(key) else _toml_value(key)
+
+
+def _toml_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, str):
+        if "\\" in value and _LITERAL.fullmatch(value):
+            return f"'{value}'"  # Windows paths read better without doubled backslashes
+        # JSON's string escapes are valid in TOML; TOML also wants DEL escaped.
+        return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
+    if isinstance(value, list):
+        return "[" + ", ".join(map(_toml_value, value)) + "]"
+    if isinstance(value, (datetime.date, datetime.time)):  # a datetime is a date too
+        return value.isoformat()
+    raise ValueError(f"a {type(value).__name__} such as {value!r}")
 
 
 def _replace(path, data: bytes) -> None:

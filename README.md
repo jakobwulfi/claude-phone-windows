@@ -208,9 +208,10 @@ also be changed without opening it, in three ways:
 `/claude-phone change_phone …`, or ask Claude); `phone change_phone` alone shows which one rings now.
 
 Nothing restarts by itself. Each change says what it needs: usually `phone restart daemon`; a new `owner_name`
-also renames the tools, which Claude Code sessions pick up when they're started again. Comments and the order of
-config.toml are kept. Settings that aren't recognised (typos) are listed by `phone config` and logged when the
-daemon starts.
+also renames the tools, which Claude Code sessions pick up when they're started again. A change writes
+config.toml again with a comment on each line saying what that setting is for, so comments of your own aren't
+kept. Settings that aren't recognised (typos) stay in the file, marked as such, and are also listed by
+`phone config` and logged when the daemon starts.
 
 ## Files
 

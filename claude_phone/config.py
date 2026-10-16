@@ -117,6 +117,55 @@ class Settings:
         return f"http://127.0.0.1:{self.whisper_port}"
 
 
+# What each setting is for: the comment on its line when `phone config` writes config.toml.
+DESCRIPTIONS = {
+    "owner_name": "your name: spoken on calls; the tools become call_<name> and notify_<name>",
+    "lan_ip": "this PC's address on the LAN, where the phones register (empty: detected)",
+    "lan_cidr": "who may reach the phonebook and DND listener (empty: lan_ip's /24)",
+    "desk_ext": "the desk phone's extension",
+    "softphone_ext": "the softphone's extension (Linphone)",
+    "ring_ext": "the phone Claude's calls ring: `phone change_phone desk|softphone`",
+    "voicemail_ext": "dial it to hear and answer Claude's waiting questions",
+    "allhands_ext": "dial it to send one message to every session",
+    "operator_ext": "dial it and say which session you want",
+    "operator_provider": "the operator's voice provider: sapi, elevenlabs or elevenlabs_v3",
+    "operator_voice": "the operator's voice (`phone voices` lists the Windows ones)",
+    "first_session_ext": "the first extension handed to sessions",
+    "last_session_ext": "the last extension handed to sessions",
+    "freeswitch_exe": "where FreeSWITCH is installed",
+    "esl_port": "FreeSWITCH's event socket, on 127.0.0.1 only",
+    "sip_port": "where the phones register (5070 when Linphone on this PC holds 5060)",
+    "daemon_port": "the daemon, on 127.0.0.1 only",
+    "whisper_port": "whisper-server, on 127.0.0.1 only",
+    "whisper_model": "the speech-to-text model file",
+    "whisper_server": "the full path to whisper-server.exe (empty: found on PATH)",
+    "whisper_language": "the language you speak (other than en needs a multilingual model)",
+    "ring_seconds": "how long Claude's calls ring before voicemail (ring + answer must fit in 90 s)",
+    "record_seconds": "how long you can answer Claude's call",
+    "message_seconds": "how long you can talk when you dial in (30-600)",
+    "callerid_max": "the longest caller ID (repo/branch) shown on the phone",
+    "tts_provider": "Claude's voice provider: sapi (Windows voices), elevenlabs or elevenlabs_v3",
+    "sapi_voice": "the Windows voice Claude speaks with (empty: the default voice)",
+    "screen_push": "show call and meeting summaries on a Yealink desk phone's screen",
+    "desk_ip": "the desk phone's address for screen pushes (empty: where it registered from)",
+    "meeting_alerts": "warn before meetings and hold Claude's calls during them",
+    "meeting_warn_minutes": "how many minutes before a meeting the warning comes",
+    "calendar_sources": "the calendars the meeting alerts read: google, outlook or both",
+    "calendar_refresh_minutes": "how often the calendars are read again",
+    "calendar_email": "your address, to skip meetings you declined (empty: the calendar's name)",
+    "whisper_provider": "the meeting whisper's voice provider: sapi, elevenlabs or elevenlabs_v3",
+    "whisper_voice": "the meeting whisper's voice (empty: Claude's voice for that provider)",
+    "whisper_text": "what the meeting whisper says",
+    "elevenlabs_voice_id": "the ElevenLabs voice, used wherever a voice provider is elevenlabs",
+    "elevenlabs_model": "the ElevenLabs model",
+    "repo_voices": "a voice per repo: [repo_voices.<repo>] with provider and voice",
+    "phonebook_port": "the port on lan_ip for the T31P's Directory and DND key",
+    "repo_ringtones": "a Yealink ringtone (1-8) per repo",
+    "ntfy_server": "the ntfy server missed-call pushes go through",
+    "push_text": "include the question in missed-call pushes (false: only who called)",
+}
+
+
 def _read() -> dict:
     # UTF-8 whatever the console's code page: names may hold æøå.
     return tomllib.loads(CONFIG_FILE.read_text(encoding="utf-8")) if CONFIG_FILE.exists() else {}

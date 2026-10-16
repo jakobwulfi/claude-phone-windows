@@ -1,6 +1,8 @@
-"""Changing settings from the command line, the slash command and chat: validation, and config.toml kept intact."""
+"""Changing settings from the command line, the slash command and chat: validation, and how config.toml is written."""
 
 import tomllib
+from dataclasses import fields
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 
@@ -33,11 +35,37 @@ def saved() -> dict:
     return tomllib.loads(config.CONFIG_FILE.read_text(encoding="utf-8"))
 
 
-def test_a_change_keeps_comments_order_and_tables():
+def described(key: str, value: str) -> str:
+    return f"{key} = {value}".ljust(configedit.COMMENT_COLUMN - 2) + f"  # {config.DESCRIPTIONS[key]}"
+
+
+def test_a_change_rewrites_the_file_with_what_each_line_is_for():
     msg = configedit.set_value("callerid_max", "40")
-    text = config.CONFIG_FILE.read_text(encoding="utf-8")
     assert msg == "Saved: callerid_max = 40. Takes effect after `phone restart daemon`."
-    assert text == USER_FILE.replace("callerid_max = 18", "callerid_max = 40")
+    assert config.CONFIG_FILE.read_text(encoding="utf-8") == "\n".join([
+        configedit.HEADER,
+        described("owner_name", '"Sam"'),
+        described("ring_ext", '"201"'),
+        described("callerid_max", "40"),
+        "",
+        f"# {config.DESCRIPTIONS['repo_voices']}",
+        "[repo_voices.lemon-stand]",
+        'provider = "sapi"',
+        'voice = "Microsoft David Desktop"',
+    ]) + "\n"
+
+
+def test_every_setting_has_a_description():
+    assert set(config.DESCRIPTIONS) == {f.name for f in fields(config.Settings)}
+
+
+def test_paths_typos_and_line_endings(config_file):
+    config_file.write_bytes(b"whisper_server = 'C:\\tools\\whisper.exe'\r\nring_secnds = 3\r\n")
+    configedit.set_value("callerid_max", "30")
+    text = config_file.read_bytes().decode()
+    assert "whisper_server = 'C:\\tools\\whisper.exe'" in text and "\r\n" in text and "\n" not in text.replace("\r\n", "")
+    assert "ring_secnds = 3" in text and text.count(configedit.TYPO) == 1
+    assert saved() == {"whisper_server": "C:\\tools\\whisper.exe", "ring_secnds": 3, "callerid_max": 30}
 
 
 def test_a_new_key_goes_above_the_tables_not_into_them():
@@ -106,7 +134,7 @@ def test_unset_goes_back_to_the_default():
     msg = configedit.unset("callerid_max")
     assert msg == "Removed callerid_max, so it's back to the default (17). Takes effect after `phone restart daemon`."
     assert "callerid_max" not in saved() and config.load().callerid_max == 17
-    assert "# My phone settings" in config.CONFIG_FILE.read_text(encoding="utf-8")
+    assert "callerid_max" not in config.CONFIG_FILE.read_text(encoding="utf-8")
 
 
 def test_each_setting_says_what_to_restart():
@@ -147,23 +175,24 @@ def test_change_phone_notes_a_phone_that_is_not_registered(monkeypatch):
     assert configedit.change_phone("desk").endswith("Note: that phone is not registered right now.")
 
 
-def test_a_new_key_stays_with_the_top_level_keys_not_under_a_tables_comment(config_file):
-    config_file.write_bytes(b'owner_name = "Sam"\r\n\r\n# Per-repo voices\r\n[repo_voices.a]\r\nvoice = "x"\r\n')
+def test_tables_keep_their_entries_and_nested_tables(config_file):
+    config_file.write_text('[repo_ringtones]\nlemon-stand = 3\n"my repo" = 5\n\n[repo_voices.a]\nvoice = "x"\n'
+                           '[repo_voices.b]\nprovider = "elevenlabs"\n', encoding="utf-8")
     configedit.set_value("callerid_max", "30")
-    assert config_file.read_bytes() == (b'owner_name = "Sam"\r\ncallerid_max = 30\r\n\r\n# Per-repo voices\r\n'
-                                        b'[repo_voices.a]\r\nvoice = "x"\r\n')
-    configedit.unset("callerid_max")
-    assert config_file.read_bytes() == b'owner_name = "Sam"\r\n\r\n# Per-repo voices\r\n[repo_voices.a]\r\nvoice = "x"\r\n'
+    assert saved() == {"repo_ringtones": {"lemon-stand": 3, "my repo": 5}, "callerid_max": 30,
+                       "repo_voices": {"a": {"voice": "x"}, "b": {"provider": "elevenlabs"}}}
+    assert config_file.read_text(encoding="utf-8").index("callerid_max") < \
+        config_file.read_text(encoding="utf-8").index("[repo_ringtones]")
 
 
-def test_a_file_of_only_tables_and_a_header_comment(config_file):
-    config_file.write_text("# header\n[[things]]\nname = 1\n", encoding="utf-8")
-    configedit.set_value("callerid_max", "30")
-    assert saved() == {"callerid_max": 30, "things": [{"name": 1}]}
-    assert config_file.read_text(encoding="utf-8").startswith("# header\ncallerid_max = 30\n[[things]]")
+def test_something_that_cant_be_written_back_leaves_the_file_alone(config_file):
+    config_file.write_text("[[things]]\nname = 1\n", encoding="utf-8")  # an array of tables: no setting is one
+    with pytest.raises(ValueError, match="can't write"):
+        configedit.set_value("callerid_max", "30")
+    assert config_file.read_text(encoding="utf-8") == "[[things]]\nname = 1\n"
 
 
-@pytest.mark.parametrize("payload", ['a"\n[x]\nowner_name="evil"', '"]\n[x]\ny=1', 'say """ \ \x1b done'])
+@pytest.mark.parametrize("payload", ['a"\n[x]\nowner_name="evil"', '"]\n[x]\ny=1', 'say """ \\ \x1b \x7f done', "it's \\ fine"])
 def test_text_values_cannot_add_keys_or_tables(payload):
     configedit.set_value("whisper_text", payload)
     data = saved()
@@ -210,3 +239,20 @@ def test_registration_is_read_from_freeswitch_or_reported_unknown(monkeypatch):
         raise ConnectionRefusedError()
     monkeypatch.setattr(esl, "api_sync", down)
     assert configedit._registered("200") == "not checkable right now (is FreeSWITCH running?)"
+
+
+@pytest.mark.parametrize("data", [
+    {"": 1, "a b": "x", "a.b": True, "æ": [], "t": {"": {"k k": "v"}, "x.y": {}}},
+    {"s": "line\u2028sep \x7f del \x00 nul \\ back ' quote \"\"\" '''", "p": "C:\\dir\\file"},
+    {"f": [float("inf"), 1e20, -0.0, 0.5], "big": 2 ** 70, "nested": [[1, 2], ["a"]], "empty": {}},
+    {"when": datetime(2026, 10, 16, 15, 0, tzinfo=timezone(timedelta(hours=5, minutes=30))),
+     "day": date(2026, 10, 16), "local": datetime(2026, 10, 16, 9, 5, 7, 120000)},
+])
+def test_render_reads_back_exactly(data):
+    assert tomllib.loads(configedit.render(data)) == data
+
+
+def test_something_unwritable_names_the_file(config_file):
+    config_file.write_text("x = [{a = 1}]\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"config.toml holds something `phone config` can't write back.*edit it by hand"):
+        configedit.set_value("callerid_max", "30")

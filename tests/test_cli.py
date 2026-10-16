@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import tomllib
 
 import pytest
 
@@ -81,7 +82,7 @@ def test_phone_config_lists_gets_sets_and_unsets(settings_file, capsys):
     assert capsys.readouterr().out.startswith("whisper_text = Psst. Meeting soon. (set in config.toml")
     cli.main(["config", "unset", "whisper_text"])
     assert "back to the default" in capsys.readouterr().out
-    assert settings_file.read_text(encoding="utf-8") == '# mine\nring_ext = "201"\n'
+    assert tomllib.loads(settings_file.read_text(encoding="utf-8")) == {"ring_ext": "201"}
 
 
 def test_phone_config_refuses_bad_values_with_a_message(settings_file):
