@@ -41,7 +41,8 @@ def test_times_come_from_each_events_own_zone():
         event("in", "DTSTART;TZID=Asia/Kolkata:20261021T093000", "DTEND;TZID=Asia/Kolkata:20261021T100000"),
         event("utc", "DTSTART:20261022T140000Z", "DTEND:20261022T150000Z"),
     ))
-    assert [m.start for m in ms] == [datetime(2026, 10, 20, 9, tzinfo=NY), datetime(2026, 10, 21, 9, 30, tzinfo=KOLKATA),
+    assert [m.start for m in ms] == [datetime(2026, 10, 20, 9, tzinfo=NY),
+                                     datetime(2026, 10, 21, 9, 30, tzinfo=KOLKATA),
                                      datetime(2026, 10, 22, 14, tzinfo=UTC)]
     assert ms[1].start == datetime(2026, 10, 21, 4, tzinfo=UTC)  # +5:30
     assert all(m.start.tzinfo is not None for m in ms)

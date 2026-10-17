@@ -15,7 +15,8 @@ def user(text) -> dict:
     return {"type": "user", "message": {"role": "user", "content": text}}
 
 
-ASSISTANT = {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Working on it"}]}}
+ASSISTANT = {"type": "assistant",
+             "message": {"role": "assistant", "content": [{"type": "text", "text": "Working on it"}]}}
 TOOL_RESULT = user([{"type": "tool_result", "tool_use_id": "t1", "content": "rejected"}])
 SUMMARY = {"type": "system", "subtype": "away_summary"}
 
@@ -43,6 +44,19 @@ def test_a_new_prompt_after_an_interrupt_is_not():
 
 def test_a_missing_transcript_is_not():
     assert not transcript.interrupted("nobody")
+
+
+def test_a_transcript_is_searched_for_once_and_again_only_once_it_is_gone(monkeypatch):
+    # Every held call checks once a second, and the glob walks every project folder.
+    from pathlib import Path
+    globs, real_glob = [], Path.glob
+    monkeypatch.setattr(Path, "glob", lambda self, pattern: globs.append(pattern) or real_glob(self, pattern))
+    write("s6", ASSISTANT, project="first")
+    first = transcript.find("s6")
+    assert transcript.find("s6") == first and len(globs) == 1
+    first.unlink()
+    write("s6", ASSISTANT, project="moved")
+    assert transcript.find("s6").parent.name == "moved" and len(globs) == 2
 
 
 def test_only_the_tail_of_a_long_transcript_is_read():

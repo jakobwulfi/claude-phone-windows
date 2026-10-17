@@ -101,6 +101,15 @@ def test_types_flattened_text_into_the_sessions_terminal(bridge):
     assert bridge.auth == [f"Bearer {TOKEN}"]
 
 
+def test_a_transcript_never_types_a_command_or_shell_line(bridge):
+    # Claude Code runs "/..." as a slash command and "!..." in the shell: a heard "slash compact" stays words.
+    sess = _session(f"vscode:{SHELL_PID}")
+    assert inject.type_into(sess, "/compact now", "test") == "sent"
+    assert inject.type_into(sess, " ! # dir", "test") == "sent"
+    assert inject.type_into(sess, "/ !", "test") == "error:empty"
+    assert bridge.typed == [(SHELL_PID, "compact now"), (SHELL_PID, "dir")]
+
+
 def test_notfound_when_no_window_has_the_terminal(bridge):
     assert inject.type_into(_session("vscode:999"), "hello", "test") == "notfound"
     assert bridge.typed == []

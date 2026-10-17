@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import socket
 import uuid
 from collections import deque
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable, Coroutine
 
 from . import log
 
@@ -25,6 +27,10 @@ SILENCE_THRESHOLD = 200
 RECORD_WARN_MIN = 30
 RECORD_WARN_S = 10
 TIME_UP_TONE = "tone_stream://L=2;%(150,100,880)"
+# send_silence_when_idle on every call: digital silence (-1) whenever nothing plays. FreeSWITCH otherwise stops the
+# RTP stream between playbacks (speech is played a sentence at a time), and a softphone's adaptive jitter buffer
+# stretches the audio each time the stream starts again: it "slows down a bit" (Linphone).
+IDLE_SILENCE = "-1"
 
 
 class Hangup(Exception):
@@ -65,6 +71,20 @@ def _check_reply(headers: dict[str, str], body: str) -> str:
     return text
 
 
+def spawn(tasks: set[asyncio.Task], coro: Coroutine, name: str, lg: logging.Logger) -> asyncio.Task:
+    """create_task, held in `tasks` until it ends (the loop keeps only a weak reference, so an unheld task can be
+    collected mid-run), and its failure logged rather than lost."""
+    task = asyncio.create_task(coro, name=name)
+    tasks.add(task)
+
+    def done(t: asyncio.Task) -> None:
+        tasks.discard(t)
+        if not t.cancelled() and t.exception():
+            lg.error("%s failed: %r", name, t.exception(), exc_info=t.exception())
+    task.add_done_callback(done)
+    return task
+
+
 def _is_gone(err: ESLError) -> bool:
     """FreeSWITCH's ways of saying the channel no longer exists."""
     text = str(err).lower()
@@ -83,6 +103,7 @@ class ESL:
         self.on_connect: list[Callable[[], Any]] = []
         self.connected = asyncio.Event()
         self.lg = log.get("esl")
+        self._tasks: set[asyncio.Task] = set()
 
     # --- connection ---
 
@@ -97,7 +118,7 @@ class ESL:
                     self.connected.set()
                     self.lg.info("event socket connected")
                     for cb in self.on_connect:
-                        asyncio.create_task(cb())
+                        spawn(self._tasks, cb(), "on-connect callback", self.lg)
                     await self._read_loop(reader)
                 finally:
                     self.connected.clear()
@@ -170,6 +191,10 @@ class ESL:
     def on_event(self, handler: Callable[[dict], Any]) -> None:
         self._handlers.append(handler)
 
+    def off_event(self, handler: Callable[[dict], Any]) -> None:
+        if handler in self._handlers:
+            self._handlers.remove(handler)
+
     def wait_for(self, pred: Callable[[dict], bool]) -> asyncio.Future:
         """Future resolving with the first event matching pred. Register before triggering the action."""
         fut = asyncio.get_running_loop().create_future()
@@ -199,7 +224,7 @@ class ESL:
             try:
                 r = h(ev)
                 if asyncio.iscoroutine(r):
-                    asyncio.create_task(r)
+                    spawn(self._tasks, r, "event handler", self.lg)
             except Exception as e:
                 self.lg.exception("event handler failed: %r", e)
 
@@ -225,8 +250,7 @@ class Call:
             self.digits.put_nowait(ev.get("DTMF-Digit", ""))
 
     def close(self) -> None:
-        if self._dtmf in self.esl._handlers:
-            self.esl._handlers.remove(self._dtmf)
+        self.esl.off_event(self._dtmf)
         self.esl.cancel_wait(self.gone)
 
     @property
@@ -244,7 +268,7 @@ class Call:
         self.esl.cancel_wait(fut)
         if self.gone in done:
             raise Hangup()
-        raise asyncio.TimeoutError()
+        raise TimeoutError()
 
     async def _api(self, cmd: str) -> str:
         """A channel command; FreeSWITCH not knowing the channel means the caller has just hung up."""
@@ -335,16 +359,22 @@ class Call:
         except Hangup:
             # FreeSWITCH still writes what was captured before the hangup.
             return "hangup", None
-        except asyncio.TimeoutError:
+        except TimeoutError:
             await self._break()
             return "timeout", None
         finally:
             if warn:
                 warn.cancel()
-        digit = None if self.digits.empty() else self.digits.get_nowait()
-        digit = digit or ev.get("variable_playback_terminator_used") or None
+        # Only a terminator ended it: any other digit was just pressed while talking.
+        def ends(d: str | None) -> bool:
+            return bool(d) and (terminate_on == "any" or d in terminate_on)
+        pressed = []
+        while not self.digits.empty():
+            pressed.append(self.digits.get_nowait())
+        digit = next((d for d in pressed if ends(d)), None)
+        if not digit and ends(used := ev.get("variable_playback_terminator_used")):
+            digit = used
         return ("digit", digit) if digit else ("finished", None)
-
 
     async def _warn_time_up(self, delay: float) -> None:
         """Mixes a double beep into what the caller hears. `record` keeps running and records only their side,
@@ -352,14 +382,8 @@ class Call:
         await asyncio.sleep(delay)
         try:
             await self.esl.api(f"uuid_displace {self.id} start {TIME_UP_TONE} 0 mux")
-        except (ESLError, ConnectionError, asyncio.TimeoutError) as e:
+        except (TimeoutError, ESLError, ConnectionError) as e:
             self.esl.lg.info("time-up beep on %s failed: %r", self.id, e)
-
-
-# send_silence_when_idle on every call: digital silence (-1) whenever nothing plays. FreeSWITCH otherwise stops the
-# RTP stream between playbacks (speech is played a sentence at a time), and a softphone's adaptive jitter buffer
-# stretches the audio each time the stream starts again: it "slows down a bit" (Linphone, 2026-10-16).
-IDLE_SILENCE = "-1"
 
 
 def originate_vars(values: dict[str, str]) -> str:
@@ -395,3 +419,10 @@ def api_sync(cmd: str, port: int, password: str, timeout: float = 5) -> str:
         _check_reply(*_read_frame_sync(f))
         sock.sendall(f"api {cmd}\n\n".encode())
         return _check_reply(*_read_frame_sync(f))
+
+
+def api_local(cmd: str) -> str:
+    """One command to this PC's FreeSWITCH from outside the daemon: the port from config, the password from the
+    keychain."""
+    from . import config, keychain
+    return api_sync(cmd, config.load().esl_port, keychain.get_or_create("esl"))

@@ -6,6 +6,7 @@ attempt is logged."""
 from __future__ import annotations
 
 import json
+import re
 import urllib.request
 from dataclasses import dataclass
 
@@ -110,10 +111,13 @@ def _type(pid: int, text: str) -> str:
 def type_into(session: registry.Session, text: str, source: str) -> str:
     """Returns 'sent', 'notfound' or 'error:<msg>'."""
     lg = log.get("inject")
-    # A single line: newlines inside would submit early.
-    text = " ".join(text.split())
+    # A single line: newlines inside would submit early. No leading / ! or #: Claude Code would run the words as a
+    # slash command or a shell line. (A leading space doesn't help: the extension trims it.)
+    text = re.sub(r"^[/!#\s]+", "", " ".join(text.split()))
     pid = _shell_pid(session.term_id)
-    if pid is None:
+    if not text:
+        result = "error:empty"
+    elif pid is None:
         result = "error:no terminal id"
     else:
         try:

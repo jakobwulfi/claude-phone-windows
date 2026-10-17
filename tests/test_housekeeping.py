@@ -27,7 +27,7 @@ def test_kept_recordings_expire_after_a_day_and_speech_after_a_week_but_pending_
 def test_log_rotation(monkeypatch):
     monkeypatch.setattr(housekeeping, "LOG_MAX_BYTES", 100)
     log = config.LOG_FILE
-    for i in range(4):
+    for _ in range(4):
         _file(log, 0, size=200)
         assert housekeeping._rotate(log)
     assert sorted(p.name for p in log.parent.glob("phone.log.*")) == ["phone.log.1", "phone.log.2", "phone.log.3"]

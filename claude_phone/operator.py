@@ -67,8 +67,8 @@ def score(text: str, s: Session) -> float:
             for n in names:
                 if c == n:
                     best = max(best, 1.0)
-                elif len(c) >= 3 and len(n) >= 3:
-                    best = max(best, _similar(c, n) if _similar(c, n) >= 0.75 else 0.0)
+                elif len(c) >= 3 and len(n) >= 3 and (similar := _similar(c, n)) >= 0.75:
+                    best = max(best, similar)
         # Two spoken words that make one name: "lemon stand" -> "lemonstand", "a g s" -> "ags".
         if i + 1 < len(words) and words[i] + words[i + 1] in names:
             best = max(best, 1.0)

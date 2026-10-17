@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import subprocess
 import sys
 from pathlib import Path
 from typing import Literal
@@ -32,7 +31,8 @@ def _body(**kw) -> dict:
 async def _post(path: str, body: dict) -> dict:
     s = config.load()
     async with aiohttp.ClientSession() as http:
-        # Ring 25 s + answer 60 s + transcription stays under Claude Code's 120 s auto-background.
+        # ring_seconds + record_seconds (at most 90 s, see config.problems) plus transcription stays under Claude
+        # Code's 120 s auto-background.
         async with http.post(f"{s.daemon_url}{path}", json=body, timeout=aiohttp.ClientTimeout(total=115)) as r:
             return await r.json()
 
@@ -101,6 +101,7 @@ async def transfer_call(to: str, reason: str, handover: str | None = None, from_
     Use when {owner} has asked you something that belongs to a different repo or session (for example a
     backend question asked in a frontend session). The phone rings, {owner} hears your reason and is
     connected to the other session; whatever {owner} says is typed into that session with your handover note.
+    This returns once {owner} is being put through: what they say goes to that session, not back to you.
 
     Args:
         to: The session to reach, as a repo/branch name ("site-be-v2", "the backend") or its extension
@@ -114,12 +115,11 @@ async def transfer_call(to: str, reason: str, handover: str | None = None, from_
     except Exception as e:
         return f"The phone system is unavailable ({e.__class__.__name__}). No transfer was made."
     st = res.get("status")
-    if st == "transferred":
-        return f'{S.owner} was put through to {res["to"]} (ext {res["ext"]}) and told it: "{res["owner_said"]}"'
+    if st == "connecting":
+        return (f"{S.owner} is being put through to {res['to']} (ext {res['ext']}). Whatever {S.owner_name} says is "
+                "typed into that session with your handover note; nothing more comes back here.")
     if st == "no_match":
         return res["message"] + " Live sessions: " + "; ".join(res["sessions"])
-    if st == "connected_no_message":
-        return res["message"]
     return f"The transfer didn't connect (reason: {res.get('reason')}). Tell {S.owner} on screen which session to use."
 
 
@@ -145,9 +145,8 @@ async def phone_settings(key: str | None = None) -> str:
 async def change_phone_setting(key: str, value: str) -> str:
     """Change one of claude-phone's settings in its config file. Only when {owner} has asked for this change.
 
-    The settings: calendar_sources (google, outlook or both, comma-separated), meeting_alerts (on/off),
-    meeting_warn_minutes (1-30), callerid_max (10-40), owner_name, ring_seconds (10-40), whisper_text (what the
-    meeting whisper says) and autostart (on/off: start claude-phone when VS Code opens). Nothing is restarted: tell {owner} the result, including what needs restarting.
+    The settings: {settings}.
+    Nothing is restarted: tell {owner} the result, including what needs restarting.
 
     Args:
         key: The setting's name, e.g. "meeting_warn_minutes".
@@ -179,17 +178,11 @@ def _prerender_elsewhere() -> None:
     long as the Claude session and would keep a 150-250 MB engine for 10 minutes, nor within this tool's time.
     One that is still going (the voice before) is stopped first. Best effort: phrases not ready are rendered when
     first needed."""
-    from . import cli, log
+    from . import log, procs
+    procs.kill("prerender")
     try:
-        old = cli._pid("prerender")
-        if old:
-            cli.psutil.Process(old).kill()
-        p = subprocess.Popen([sys.executable, "-m", "claude_phone", "prerender"], stdin=subprocess.DEVNULL,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW)
-        cli.RUN.mkdir(parents=True, exist_ok=True)
-        (cli.RUN / "prerender.pid").write_text(str(p.pid))
-    except (OSError, cli.psutil.Error) as e:
+        procs.spawn("prerender", [sys.executable, "-m", "claude_phone", "prerender"], log=None)
+    except OSError as e:
         log.get("mcp").warning("couldn't start `phone prerender`: %r", e)
 
 
@@ -237,11 +230,14 @@ S = config.load()
 # These change no files or settings, so Claude Code may run them in plan mode without a prompt, as it does a question
 # typed in the terminal. Plan mode asks before any hook or allow rule is consulted, so only this annotation helps there.
 READ_ONLY = {call_owner, notify_owner, phone_settings}
+# For change_phone_setting: each one Claude may change, with what it may be and what it's for.
+SETTINGS = "; ".join(f"{k} ({spec.allowed}): {config.DESCRIPTIONS[k]}" for k, spec in configedit.SPECS.items())
 for fn, name in ((call_owner, f"call_{S.owner_slug}"), (notify_owner, f"notify_{S.owner_slug}"),
                  (transfer_call, "transfer_call"), (phone_settings, "phone_settings"),
                  (change_phone_setting, "change_phone_setting"), (change_phone, "change_phone"),
                  (change_voice, "change_voice")):
-    mcp.add_tool(fn, name=name, description=fn.__doc__.format(owner=S.owner_name, slug=S.owner_slug),
+    mcp.add_tool(fn, name=name, description=fn.__doc__.format(owner=S.owner_name, slug=S.owner_slug,
+                                                              settings=SETTINGS),
                  annotations=ToolAnnotations(read_only_hint=True) if fn in READ_ONLY else None)
 
 

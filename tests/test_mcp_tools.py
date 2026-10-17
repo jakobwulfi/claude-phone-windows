@@ -55,15 +55,23 @@ def test_a_transfer_that_matches_nothing_lists_the_live_sessions(daemon_replies)
     assert asyncio.run(mcp_server.transfer_call("the backend", "A backend question.")) == \
         "No session matches 'the backend'. Live sessions: 301 site-fe/main; 302 docs/main"
     daemon_replies.clear()
-    daemon_replies.update({"status": "transferred", "to": "site-be/main", "ext": 303, "owner_said": "Is it up?"})
+    daemon_replies.update({"status": "connecting", "to": "site-be/main", "ext": 303})
     assert asyncio.run(mcp_server.transfer_call("303", "Over to you.")) == \
-        'The user was put through to site-be/main (ext 303) and told it: "Is it up?"'
+        ("The user is being put through to site-be/main (ext 303). Whatever the user says is typed into that "
+         "session with your handover note; nothing more comes back here.")
 
 
 def test_the_tools_are_registered_with_the_owners_name_filled_in():
     tools = {t.name: t for t in asyncio.run(mcp_server.mcp.list_tools())}
     assert {"phone_settings", "change_phone_setting", "change_phone"} <= set(tools)
     assert f"Only when {config.load().owner_name} has asked" in tools["change_phone_setting"].description
+
+
+def test_claude_is_told_every_setting_it_may_change_and_what_it_may_be():
+    from claude_phone import configedit
+    tools = {t.name: t for t in asyncio.run(mcp_server.mcp.list_tools())}
+    for key, spec in configedit.SPECS.items():
+        assert f"{key} ({spec.allowed})" in tools["change_phone_setting"].description
 
 
 def test_calling_messaging_and_reading_settings_are_read_only_so_plan_mode_lets_them_run():

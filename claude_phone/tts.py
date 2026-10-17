@@ -9,13 +9,14 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import subprocess
 import threading
+import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from . import config, keychain
+from . import audio, config, keychain
 
 
 class Provider:
@@ -25,17 +26,7 @@ class Provider:
         raise NotImplementedError
 
 
-def _to_wav16(src: Path, dst: Path) -> None:
-    """Any audio file to 16 kHz mono 16-bit WAV. dst may carry a non-.wav suffix, so the format is named."""
-    ffmpeg = shutil.which("ffmpeg")
-    if not ffmpeg:
-        raise RuntimeError("ffmpeg not found: winget install Gyan.FFmpeg, then open a new terminal")
-    subprocess.run([ffmpeg, "-nostdin", "-loglevel", "error", "-y", "-i", str(src),
-                    "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", "-f", "wav", str(dst)],
-                   check=True, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-
-
-SAPI_TIMEOUT_S = 60
+WINDOWS_TIMEOUT_S = 60
 # Windows has two sets of voices: System.Speech's ("Microsoft David Desktop") and OneCore's ("Microsoft Mark"),
 # which System.Speech can't see. A System.Speech voice is written straight to 16 kHz; a OneCore one comes as WAV at
 # its own rate and is converted after. Text, voice and output path arrive as environment variables, so nothing in
@@ -45,7 +36,7 @@ $null = [Windows.Media.SpeechSynthesis.SpeechSynthesizer, Windows.Media.SpeechSy
 $null = [Windows.Storage.Streams.DataReader, Windows.Storage.Streams, ContentType = WindowsRuntime]
 $onecore = [Windows.Media.SpeechSynthesis.SpeechSynthesizer]::AllVoices
 """
-_SAPI_SCRIPT = r"""
+_WINDOWS_SCRIPT = r"""
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Speech
 $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
@@ -63,7 +54,8 @@ try {
         $task = $asTask.MakeGenericMethod($t).Invoke($null, @($op)); $task.Wait(-1) | Out-Null; $task.Result }
       $o = New-Object Windows.Media.SpeechSynthesis.SpeechSynthesizer
       $o.Voice = $v
-      $stream = Await ($o.SynthesizeTextToStreamAsync($env:CP_TEXT)) ([Windows.Media.SpeechSynthesis.SpeechSynthesisStream])
+      $op = $o.SynthesizeTextToStreamAsync($env:CP_TEXT)
+      $stream = Await $op ([Windows.Media.SpeechSynthesis.SpeechSynthesisStream])
       $reader = New-Object Windows.Storage.Streams.DataReader($stream.GetInputStreamAt(0))
       $n = Await ($reader.LoadAsync([uint32]$stream.Size)) ([uint32])
       $bytes = New-Object byte[] $n
@@ -80,8 +72,92 @@ try {
   $s.Speak($env:CP_TEXT)
 } finally { $s.Dispose() }
 """
+# The same as a worker (voiceworker.Worker): one PowerShell that loads System.Speech once and answers a JSON request
+# per line ({"text", "voice", "out"}), so a call's sentences don't each wait ~0.3 s for PowerShell to start. The text
+# arrives as JSON data, never as script. Speak's own output is discarded, so only the replies reach stdout; and each
+# WAV is let go of after its sentence, to be moved into the speech cache.
+_WINDOWS_LOOP = r"""
+$ErrorActionPreference = 'Stop'
+$utf8 = New-Object Text.UTF8Encoding $false
+$requests = New-Object IO.StreamReader([Console]::OpenStandardInput(), $utf8)
+$replies = New-Object IO.StreamWriter([Console]::OpenStandardOutput(), $utf8)
+$replies.AutoFlush = $true
+Add-Type -AssemblyName System.Speech
+$fmt = New-Object System.Speech.AudioFormat.SpeechAudioFormatInfo(16000,
+  [System.Speech.AudioFormat.AudioBitsPerSample]::Sixteen, [System.Speech.AudioFormat.AudioChannel]::Mono)
+$s = $null
+$o = $null
+# A new synthesizer, which sees the voices installed until now (and the default voice as it is now).
+function Voices {
+  if ($script:s) { $script:s.Dispose() }
+  $script:s = New-Object System.Speech.Synthesis.SpeechSynthesizer
+  $script:default = $script:s.Voice.Name
+  $script:installed = @{}
+  $script:s.GetInstalledVoices() | Where-Object { $_.Enabled } |
+    ForEach-Object { $script:installed[$_.VoiceInfo.Name] = 1 }
+  if ($script:o) { $script:onecore = [Windows.Media.SpeechSynthesis.SpeechSynthesizer]::AllVoices }
+}
+Voices
+function Await($op, [Type]$t) {
+  $task = $script:asTask.MakeGenericMethod($t).Invoke($null, @($op)); $task.Wait(-1) | Out-Null; $task.Result }
+function OneCore($req) {
+  if (-not $script:o) {
+""" + _ONECORE + r"""
+    Add-Type -AssemblyName System.Runtime.WindowsRuntime
+    $script:asTask = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+      $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
+      $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' } | Select-Object -First 1
+    $script:onecore = $onecore
+    $script:o = New-Object Windows.Media.SpeechSynthesis.SpeechSynthesizer
+  }
+  $v = $script:onecore | Where-Object { $_.DisplayName -eq $req.voice } | Select-Object -First 1
+  if (-not $v) { return $false }
+  $script:o.Voice = $v
+  $op = $script:o.SynthesizeTextToStreamAsync($req.text)
+  $stream = Await $op ([Windows.Media.SpeechSynthesis.SpeechSynthesisStream])
+  $reader = New-Object Windows.Storage.Streams.DataReader($stream.GetInputStreamAt(0))
+  try {
+    $n = Await ($reader.LoadAsync([uint32]$stream.Size)) ([uint32])
+    $bytes = New-Object byte[] $n
+    $reader.ReadBytes($bytes)
+  } finally { $reader.Dispose(); $stream.Dispose() }
+  [IO.File]::WriteAllBytes($req.out, $bytes)
+  return $true
+}
+# Spoken in a OneCore voice: $true. Not one of those, or OneCore failing (logged), leaves it to System.Speech.
+function TryOneCore($req) {
+  try { return (OneCore $req) }
+  catch { [Console]::Error.WriteLine("OneCore failed, so another voice speaks: " + $_.Exception.Message) }
+  return $false
+}
+function Speak($req) {
+  $v = $req.voice
+  if ($v -and -not $script:installed.ContainsKey($v)) {
+    if (TryOneCore $req) { return }
+    Voices  # installed since this worker started?
+    if (-not $script:installed.ContainsKey($v) -and (TryOneCore $req)) { return }
+  }
+  # A voice that isn't installed keeps the default voice rather than leaving a call silent.
+  $s = $script:s
+  $s.SelectVoice($(if ($v -and $script:installed.ContainsKey($v)) { $v } else { $script:default }))
+  $s.SetOutputToWaveFile($req.out, $fmt)
+  try { $s.Speak($req.text) } finally { $s.SetOutputToNull() }
+}
+$replies.WriteLine('{"ready": true}')
+while ($null -ne ($line = $requests.ReadLine())) {
+  try { $null = Speak (ConvertFrom-Json $line); $reply = '{"ok": true}' }
+  catch { $reply = ConvertTo-Json -Compress @{ error = $_.Exception.Message } }
+  $replies.WriteLine($reply)
+}
+$s.Dispose()
+"""
+WINDOWS_WORKER = ["powershell", "-NoProfile", "-NonInteractive", "-Command", _WINDOWS_LOOP]
+WINDOWS_FIRST_TIMEOUT_S = 20  # no model to load: PowerShell and System.Speech start in ~0.5 s
+# After the worker is found down, the one-off script speaks this long, rather than every sentence waiting for the
+# worker to fail first.
+WINDOWS_WORKER_BACKOFF_S = 300
 # Every voice once: System.Speech's, then OneCore's that aren't one of those under a name without "Desktop".
-_SAPI_VOICES = r"""
+_WINDOWS_VOICES = r"""
 Add-Type -AssemblyName System.Speech
 $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
 $names = @{}
@@ -98,37 +174,45 @@ try {
 
 def _powershell(script: str, env: dict[str, str] | None = None) -> str:
     r = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
-                       env={**os.environ, **(env or {})}, capture_output=True, text=True, timeout=SAPI_TIMEOUT_S,
+                       env={**os.environ, **(env or {})}, capture_output=True, text=True, timeout=WINDOWS_TIMEOUT_S,
                        creationflags=subprocess.CREATE_NO_WINDOW)
     if r.returncode != 0:
         raise RuntimeError(f"Windows speech failed: {r.stderr.strip()[:300]}")
     return r.stdout
 
 
-def _ensure_wav16(path: Path) -> None:
-    """Converts a WAV in place unless it's already 16 kHz mono 16-bit."""
-    import wave
-    with wave.open(str(path), "rb") as w:
-        if (w.getframerate(), w.getnchannels(), w.getsampwidth()) == (16000, 1, 2):
-            return
-    tmp = path.with_name(path.stem + ".16k.wav")
-    _to_wav16(path, tmp)
-    tmp.replace(path)
-
-
-class Sapi(Provider):
-    """Windows' built-in voices: System.Speech's and OneCore's."""
-    name = "sapi"
+class Windows(Provider):
+    """Windows' built-in voices: System.Speech's and OneCore's, from a worker, or a one-off script while it's down."""
+    name = "windows"
+    worker_down_until = 0.0  # time.monotonic(); until then the one-off script speaks
 
     def render(self, text: str, voice: str | None, out_wav: Path) -> None:
-        voice = voice or config.load().sapi_voice
-        _powershell(_SAPI_SCRIPT, {"CP_TEXT": text, "CP_VOICE": voice or "", "CP_OUT": str(out_wav)})
-        _ensure_wav16(out_wav)
+        voice = voice or ""  # empty: the Windows default voice
+        if not self._worker_spoke(text, voice, out_wav):
+            _powershell(_WINDOWS_SCRIPT, {"CP_TEXT": text, "CP_VOICE": voice, "CP_OUT": str(out_wav)})
+        audio.ensure_wav16(out_wav)
+
+    def _worker_spoke(self, text: str, voice: str, out_wav: Path) -> bool:
+        """False when the worker is down, now or lately. An error it answers with (the text or the path was the
+        trouble, which the script would trip on too) is raised."""
+        from . import voiceworker
+        if time.monotonic() < self.worker_down_until:
+            return False
+        try:
+            voiceworker.command_worker("windows", WINDOWS_WORKER, first_timeout=WINDOWS_FIRST_TIMEOUT_S).render(
+                text=text, voice=voice, out=str(out_wav))
+            return True
+        except (voiceworker.Unavailable, OSError) as e:  # OSError: PowerShell itself wouldn't start
+            from . import log
+            self.worker_down_until = time.monotonic() + WINDOWS_WORKER_BACKOFF_S
+            log.get("tts").warning("the Windows voice worker is down (%s); a one-off script speaks for %d min", e,
+                                   WINDOWS_WORKER_BACKOFF_S // 60)
+            return False
 
 
-def sapi_voices() -> list[str]:
+def windows_voice_lines() -> list[str]:
     """Installed Windows voices, as 'name<TAB>culture' lines, for `phone voice`."""
-    return [line for line in _powershell(_SAPI_VOICES).splitlines() if line.strip()]
+    return [line for line in _powershell(_WINDOWS_VOICES).splitlines() if line.strip()]
 
 
 class Piper(Provider):
@@ -141,7 +225,7 @@ class Piper(Provider):
         if not model.exists():
             raise RuntimeError(f"Piper voice {voice} isn't downloaded")
         voiceworker.worker("piper", voices.engine_dir("piper")).render(model=str(model), text=text, out=str(out_wav))
-        _ensure_wav16(out_wav)
+        audio.ensure_wav16(out_wav)
 
 
 class Kokoro(Provider):
@@ -154,8 +238,8 @@ class Kokoro(Provider):
         if not (model.exists() and styles.exists()):
             raise RuntimeError("Kokoro isn't downloaded")
         voiceworker.worker("kokoro", voices.engine_dir("kokoro")).render(
-            model=str(model), voices=str(styles), voice=voice or voices.KOKORO_DEFAULT, text=text, out=str(out_wav))
-        _ensure_wav16(out_wav)
+            model=str(model), voices=str(styles), voice=voice or KOKORO_DEFAULT, text=text, out=str(out_wav))
+        audio.ensure_wav16(out_wav)
 
 
 class ElevenLabs(Provider):
@@ -167,15 +251,16 @@ class ElevenLabs(Provider):
         if not key:
             raise RuntimeError("no ElevenLabs key (set ELEVENLABS_API_KEY or keychain item claude-phone/elevenlabs)")
         s = config.load()
-        voice = voice or s.elevenlabs_voice_id
+        voice = voice or ELEVENLABS_DEFAULT
         req = urllib.request.Request(
-            f"https://api.elevenlabs.io/v1/text-to-speech/{voice}?output_format=pcm_16000",
+            f"https://api.elevenlabs.io/v1/text-to-speech/{urllib.parse.quote(voice, safe='')}"
+            "?output_format=pcm_16000",
             data=json.dumps({"text": text, "model_id": self.model or s.elevenlabs_model}).encode(),
             headers={"xi-api-key": key, "Content-Type": "application/json"},
         )
         with urllib.request.urlopen(req, timeout=20) as r:
             pcm = r.read()
-        _write_wav(out_wav, pcm, 16000)
+        audio.write_wav(out_wav, pcm, 16000)
 
 
 class ElevenLabsV3(ElevenLabs):
@@ -184,43 +269,33 @@ class ElevenLabsV3(ElevenLabs):
     model = "eleven_v3"
 
 
-def _write_wav(path: Path, pcm: bytes, rate: int) -> None:
-    import wave
-    with wave.open(str(path), "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(rate)
-        w.writeframes(pcm)
-
-
-PROVIDERS: dict[str, Provider] = {p.name: p for p in (Sapi(), Piper(), Kokoro(), ElevenLabs(), ElevenLabsV3())}
-# `phone voice` calls the Windows voices "windows"; config.toml has always said "sapi".
-ENGINE_ALIASES = {"windows": "sapi"}
+PROVIDERS: dict[str, Provider] = {p.name: p for p in (Windows(), Piper(), Kokoro(), ElevenLabs(), ElevenLabsV3())}
+KOKORO_DEFAULT = "af_heart"
+ELEVENLABS_DEFAULT = "JBFqnCBsd6RMkjVDRZzb"  # the voice a bare "elevenlabs" speaks with
 
 
 def parse_voice(text: str) -> tuple[str, str | None]:
-    """'piper:en_US-ryan-medium' -> ('piper', 'en_US-ryan-medium'); 'windows' -> ('sapi', None): the default."""
-    engine, _, name = text.strip().partition(":")
-    engine = engine.strip().lower()
-    return ENGINE_ALIASES.get(engine, engine), name.strip() or None
+    """'piper:en_US-ryan-medium' -> ('piper', 'en_US-ryan-medium'); 'windows' -> ('windows', None): the default."""
+    word, _, name = text.strip().partition(":")
+    return config.engine(word), name.strip() or None
+
+
+def voice_setting(text: object) -> tuple[str, str | None] | None:
+    """An "engine:name" setting as (engine, name), if it names an engine there is."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    voice = parse_voice(text)
+    return voice if voice[0] in PROVIDERS else None
 
 
 def claude_voice() -> tuple[str, str | None]:
-    """Claude's voice: `voice` from `phone voice`, else the older tts_provider setting."""
-    s = config.load()
-    if s.voice.strip():
-        provider, name = parse_voice(s.voice)
-        if provider in PROVIDERS:
-            return provider, name
-    return s.tts_provider, None
+    """Claude's voice: `voice`, set by `phone voice`; empty (or not a voice) is the Windows default voice."""
+    return voice_setting(config.load().voice) or ("windows", None)
 
 
 def voice_for(repo: str | None) -> tuple[str, str | None]:
-    s = config.load()
-    rv = s.repo_voices.get(repo or "", {}) if repo else {}
-    if "provider" in rv:
-        return ENGINE_ALIASES.get(rv["provider"], rv["provider"]), rv.get("voice")
-    return claude_voice()
+    """The repo's own voice, if repo_voices gives it one, else Claude's."""
+    return (voice_setting(config.load().repo_voices.get(repo)) if repo else None) or claude_voice()
 
 
 def render(text: str, repo: str | None = None, voice: tuple[str, str | None] | None = None,
@@ -229,18 +304,19 @@ def render(text: str, repo: str | None = None, voice: tuple[str, str | None] | N
     `voice` is (provider, voice) and overrides the repo's voice. fallback=False: raise rather than speak with the
     Windows voice, for checking that a voice works."""
     provider, voice = voice or voice_for(repo)
-    s = config.load()
-    if not voice:  # name the default voice in the cache key, so changing it in config isn't masked by old speech
-        voice = {"sapi": s.sapi_voice, "piper": "", "kokoro": "af_heart"}.get(provider, s.elevenlabs_voice_id)
+    if not voice:  # the engine's default voice, named in the cache key
+        voice = {"windows": "", "piper": "", "kokoro": KOKORO_DEFAULT}.get(provider, ELEVENLABS_DEFAULT)
     try:
+        if provider not in PROVIDERS:
+            raise RuntimeError(f"there's no voice engine called {provider!r}")
         return _cached(provider, voice, text)
     except Exception as e:
-        if provider == "sapi" or not fallback:
+        if provider == "windows" or not fallback:
             raise
         from . import log
         log.get("tts").warning("%s:%s failed (%r); speaking with the Windows voice", provider, voice, e)
         # Kept under the Windows voice's own name, so the voice that failed is tried again next time.
-        return _cached("sapi", s.sapi_voice, text)  # never leave a call silent
+        return _cached("windows", "", text)  # never leave a call silent
 
 
 def _cached(provider: str, voice: str, text: str) -> str:
@@ -318,7 +394,7 @@ class Speech:
         self._task = asyncio.create_task(self._render(repo, voice))
 
     async def _render(self, repo: str | None, voice: tuple[str, str | None] | None) -> None:
-        for i, (text, ready) in enumerate(zip(self.parts, self._ready)):
+        for i, (text, ready) in enumerate(zip(self.parts, self._ready, strict=True)):
             try:
                 path = await render_async(text, repo, voice)
             except Exception as e:
@@ -367,14 +443,11 @@ def join_wavs(paths: list[str]) -> str:
         with wave.open(str(tmp), "wb") as w:
             w.setnchannels(1), w.setsampwidth(2), w.setframerate(16000)
             for p in paths:
+                if not audio.is_wav16(p):  # appended raw, another format would come out garbled
+                    audio.to_wav16(Path(p), converted)
+                    p = converted
                 with wave.open(str(p), "rb") as part:
-                    ok = (part.getframerate(), part.getnchannels(), part.getsampwidth()) == (16000, 1, 2)
-                    frames = part.readframes(part.getnframes()) if ok else None
-                if frames is None:  # appended raw, another format would come out garbled
-                    _to_wav16(Path(p), converted)
-                    with wave.open(str(converted), "rb") as part:
-                        frames = part.readframes(part.getnframes())
-                w.writeframes(frames)
+                    w.writeframes(part.readframes(part.getnframes()))
         tmp.replace(out)
     finally:
         tmp.unlink(missing_ok=True)
@@ -383,8 +456,7 @@ def join_wavs(paths: list[str]) -> str:
 
 
 def operator_voice() -> tuple[str, str | None]:
-    s = config.load()
-    return s.operator_provider, s.operator_voice
+    return parse_voice(config.load().operator_voice)
 
 
 def op(text: str) -> str:
@@ -410,7 +482,7 @@ def beep() -> str:
             for i in range(n)
         )
         tmp = base.with_suffix(".tmp.wav")
-        _write_wav(tmp, frames, rate)
+        audio.write_wav(tmp, frames, rate)
         tmp.replace(out)
     return out.as_posix()
 
@@ -440,8 +512,9 @@ PHRASES = {
 }
 
 
-def phrase(key: str, repo: str | None = None, **kw) -> str:
-    return render(PHRASES[key].format(**kw), repo)
+def phrase(key: str) -> str:
+    """A fixed phrase in Claude's voice. Those with {placeholders} are formatted and rendered by their caller."""
+    return render(PHRASES[key])
 
 
 def spoken_label(label: str) -> str:
@@ -472,7 +545,7 @@ def prerender() -> int:
     for v in OPERATOR.values():
         if "{" not in v:
             op(v)
-    for k, v in PHRASES.items():
+    for v in PHRASES.values():
         if "{" not in v:
             render(v)
             n += 1

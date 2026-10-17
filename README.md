@@ -57,8 +57,7 @@ On any recording: `#` ends it, hanging up also ends it. In voicemail: `#` during
    winget install Gyan.FFmpeg
    ```
 2. **whisper.cpp:** from its [releases](https://github.com/ggml-org/whisper.cpp/releases), the Windows builds are
-   attached to the build tag published next to each version (for v1.9.5: `b5454`). Take
-   `whisper-blas-bin-x64.zip` (CPU) or a `cuda` build (NVIDIA), unzip it to `C:\tools\whisper` and add
+   attached to the build tag published next to each version. Take `whisper-blas-bin-x64.zip` (CPU) or a `cuda` build (NVIDIA), unzip it to `C:\tools\whisper` and add
    `C:\tools\whisper\Release` to PATH, or set `whisper_server` in config.toml to the full path of
    `whisper-server.exe`. The first `phone up` downloads the speech model (`small.en`, ~190 MB; about 2 s per
    answer on a 6-core CPU, see `whisper_model` in config.example.toml for faster or more accurate ones).
@@ -71,7 +70,7 @@ On any recording: `#` ends it, hanging up also ends it. In voicemail: `#` during
 5. **VS Code extension:**
    ```powershell
    cd vscode-extension; npm install; npm run package
-   code --install-extension claude-phone-0.2.0.vsix
+   code --install-extension (Get-ChildItem *.vsix | Sort-Object LastWriteTime)[-1].FullName
    ```
    Reload VS Code. The phone icon in the status bar shows how many sessions claude-phone knows (`off` when it isn't
    running). Click it for the list with each session's extension; pick one to show its terminal.
@@ -81,7 +80,7 @@ On any recording: `#` ends it, hanging up also ends it. In voicemail: `#` during
    `<your LAN address>:5070` (`phone status` shows the address in its registrations), UDP. Dial **600**: you
    should hear yourself.
 7. **Secrets** live in Windows Credential Manager (service `claude-phone`): `phone secret sip` prints the SIP
-   password for the phones. ElevenLabs: `ELEVENLABS_API_KEY`, or `.venv\Scripts\python -m keyring set claude-phone elevenlabs`.
+   password for the phones. ElevenLabs: `ELEVENLABS_API_KEY`, or `phone voice key`.
 8. **Claude Code wiring** (below), and add [docs/claude-md-snippet.md](docs/claude-md-snippet.md) to `~/.claude/CLAUDE.md`.
    For the `/claude-phone` command, copy [claude/commands/claude-phone.md](claude/commands/claude-phone.md) to
    `%USERPROFILE%\.claude\commands\` and replace `C:/path/to/claude-phone-windows` in it with your clone.
@@ -91,11 +90,9 @@ On any recording: `#` ends it, hanging up also ends it. In voicemail: `#` during
 ### Claude Code wiring
 
 Five hooks in `%USERPROFILE%\.claude\settings.json` (replace the path with your clone; merge into an existing
-`"hooks"` key). The `PreToolUse` one lets Claude enter plan mode without an approval prompt waiting in the terminal, but only
-when you asked for it by phone; typed at the keyboard it asks as usual, and approving the plan always asks. It also
-lets Claude call or message you without a prompt; changing your settings still asks. In plan mode no hook is asked,
-but the call and notify tools are marked read-only, which plan mode lets through without a prompt.
-`phone status` warns about any of these hooks that are missing.
+`"hooks"` key). PreToolUse lets Claude call or message you, and enter plan mode when you asked by phone, without a
+prompt (details in [build-notes](docs/build-notes.md)). `phone status` warns about any of these hooks that are
+missing.
 
 ```json
 "hooks": {
@@ -141,21 +138,20 @@ it's downloaded on request, not bundled.
 For an ElevenLabs key: make an account at elevenlabs.io, open Profile → API Keys, create a key with the
 **Text to Speech** and **Voices: Read** permissions, then run `phone voice key` and paste it.
 
-The operator on 0 keeps its own voice (`operator_voice`). `phone say "hello"` renders a phrase and prints where the
-audio went.
-
-The older settings still work when `voice` is empty: `tts_provider` with `sapi_voice` or `elevenlabs_voice_id`, e.g.
+The operator on 0 keeps its own voice (`operator_voice`), and so can the meeting whisper (`whisper_voice`), each
+as `engine:name`, e.g.
 
 ```toml
-tts_provider = "elevenlabs"
-elevenlabs_voice_id = "r1KmysJdVYZjJCm4mL3b"   # Jessica, the voice in the original demo clips
-operator_provider = "elevenlabs"
-operator_voice = "r1KmysJdVYZjJCm4mL3b"
+operator_voice = "elevenlabs:r1KmysJdVYZjJCm4mL3b"   # Jessica, the voice in the original demo clips
 ```
 
-Speech is cached, so repeated phrases cost nothing. If ElevenLabs fails or there's no key, that call falls back to
-the Windows voice rather than going silent. Each repo can have its own voice (`repo_voices` in
-[config.example.toml](config.example.toml)).
+`phone say "hello"` renders a phrase and prints where the audio went. Older voice settings (`tts_provider`,
+`sapi_voice`, `elevenlabs_voice_id`, `operator_provider`, `whisper_provider`) still work; `phone status` notes them,
+and `phone config migrate` (or the next `phone config set` or `phone voice`) writes them in this form.
+
+Speech is cached, so repeated phrases cost nothing. If a voice fails (an engine that won't start, ElevenLabs without
+a key), that call falls back to the Windows default voice rather than going silent. Each repo can have its own voice
+(`repo_voices` in [config.example.toml](config.example.toml)).
 
 ### The phone's screen and meetings (optional)
 
@@ -224,14 +220,14 @@ also be changed without opening it, in three ways:
 
 | Setting | What | Allowed |
 |---|---|---|
-| `calendar_sources` | which calendars the meeting alerts read | `google`, `outlook`, or both |
-| `meeting_alerts` | warn before meetings, hold Claude's calls during them | on / off |
-| `meeting_warn_minutes` | how long before a meeting the warning comes | 1-30 |
-| `callerid_max` | the longest caller ID (repo/branch) shown on the phone | 10-40 |
-| `owner_name` | your name, spoken on calls and used in the tool names (`call_<name>`) | up to 40 characters |
-| `ring_seconds` | how long Claude's calls ring before voicemail | 10-40 (ring + answer must fit in 90 s) |
+| `calendar_sources` | the calendars the meeting alerts read | `google`, `outlook`, or both separated by a comma |
+| `meeting_alerts` | warn before meetings and hold Claude's calls during them | on or off |
+| `meeting_warn_minutes` | how many minutes before a meeting the warning comes | 1-30 minutes |
+| `callerid_max` | the longest caller ID (repo/branch) shown on the phone | 10-40 characters |
+| `owner_name` | your name: spoken on calls; the tools become `call_<name>` and `notify_<name>` | up to 40 letters, digits, spaces, dots, apostrophes and dashes |
+| `ring_seconds` | how long Claude's calls ring before voicemail | 10-40 seconds, at most 90 minus `record_seconds` |
 | `whisper_text` | what the meeting whisper says | up to 120 characters |
-| `autostart` | start claude-phone when VS Code opens (off: only by command) | on / off |
+| `autostart` | start claude-phone when VS Code opens (false: only with `phone up` or /claude-phone) | on or off |
 
 - **Command line:** `phone config` lists them with their values; `phone config get <setting>`,
   `phone config set <setting> <value>`, `phone config unset <setting>` (back to the default).
@@ -252,19 +248,28 @@ kept. Settings that aren't recognised (typos) stay in the file, marked as such, 
 
 | Path | What |
 |---|---|
-| `~/.claude-phone/registry.db` | sessions, voicemails, injection log (SQLite) |
+| `~/.claude-phone/registry.db` | sessions, voicemails, injection log, and whether the daemon switched the phone's DND on (SQLite) |
 | `~/.claude-phone/logs/phone.log` | the log to tail |
 | `~/.claude-phone/logs/{freeswitch,whisper,daemon}.out` | process output |
 | `~/.claude-phone/freeswitch/` | generated FreeSWITCH config (from `freeswitch/freeswitch.xml.tmpl` by `phone up` or `phone config render`), its log and database |
 | `~/.claude-phone/recordings/` | what was said on calls: deleted once transcribed; kept 1 day if transcription failed or heard nothing |
 | `~/.claude-phone/bridges/` | one file per VS Code window: how the daemon reaches its terminals |
 | `~/.claude-phone/sounds/` | hold music, the beep, and `tts/`: Claude's speech, cached 7 days (a waiting voicemail's question is kept until answered). `phone status` shows the audio's size |
+| `~/.claude-phone/models/` | whisper's speech model, downloaded by the first `phone up` |
+| `~/.claude-phone/engines/`, `voices/` | the optional voices `phone voice` adds: each engine's Python packages, and its voice files |
+| `~/.claude-phone/run/` | the services' pid files |
+| `~/.claude-phone/phone.json` | where `phone.exe` is, for the VS Code extension's autostart |
 
 ## Tests
 
 `.venv\Scripts\pip install -e .[dev]`, then `.venv\Scripts\pytest`. They run against a throwaway home, a fake call
-and a fake VS Code bridge: no phone exchange, audio, whisper or VS Code needed. The extension's own tests:
-`npm test` in `vscode-extension`.
+and a fake VS Code bridge: no phone exchange, whisper or VS Code needed. One test speaks a few sentences with the
+Windows voices, into files in its temp folder. The extension's own tests: `npm test` in `vscode-extension`.
+
+Coverage: `.venv\Scripts\pytest --cov=claude_phone --cov-report=term-missing` lists, per file, the share of lines
+the tests run and the lines they never reach.
+
+Lint: `.venv\Scripts\ruff check claude_phone tests` (rules in `pyproject.toml`; it doesn't reformat anything).
 
 ## Troubleshooting
 

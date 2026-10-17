@@ -92,11 +92,6 @@ testing, so this is the first real check of the light.)
 4. Run through the call flows once more on the desk phone: dial a session (301), let Claude call you, voicemail,
    operator (0), all-hands (9).
 
-## Notes
-
-- **DND:** the phone rejects calls with code 480. `call_<name>` treats that as "not answered" and leaves a voicemail.
-- **Caller ID length:** the T31P shows 17 characters, then scrolls the rest. `callerid_max` (17) trims the branch first, then the repo.
-
 ## 11. Live session list
 
 **Claude soft key (live, use this).** The phone fetches the list on every press.
@@ -109,11 +104,6 @@ prefetched with the top level, so this list goes stale. Kept for completeness (M
 
 Both URLs are on the LAN only (the daemon refuses anything outside `lan_cidr`). To check them before the phone
 arrives, open `http://<pc-ip>:8766/sessions.xml` in a browser; it lists the live sessions.
-
-## Ringtones
-
-Each repo gets its own ringtone (1-8), sent as `Alert-Info: <http://127.0.0.1>;info=RingN`. The T31P plays it with no setup.
-`phone list` shows each repo's ring. To pin one: `[repo_ringtones]` in `~/.claude-phone/config.toml`, e.g. `lemon-stand = 3`.
 
 ## 12. Screen messages (optional, for `screen_push`)
 
@@ -140,3 +130,18 @@ meeting, and switching it off ends that meeting's hold early.
 
 After a wrong password the phone locks its web login for a few minutes; the daemon stops trying after
 one refusal until it restarts.
+
+The phone's certificate is its own, so the PC trusts the one it meets first: the first screen push or key press
+remembers it, and later ones go only to a phone showing the same one (anything else gets nothing, least of all the
+admin password; `phone.log` says so). A new phone, or this one after a factory reset, has a new certificate:
+run `phone desk-cert reset` once.
+
+## Ringtones
+
+Each repo gets its own ringtone (1-8), sent as `Alert-Info: <http://127.0.0.1>;info=RingN`. The T31P plays it with no setup.
+`phone list` shows each repo's ring. To pin one: `[repo_ringtones]` in `~/.claude-phone/config.toml`, e.g. `lemon-stand = 3`.
+
+## Notes
+
+- **DND:** the phone rejects calls with code 480. `call_<name>` treats that as "not answered" and leaves a voicemail.
+- **Caller ID length:** the T31P shows 17 characters, then scrolls the rest. `callerid_max` (17) trims the branch first, then the repo.

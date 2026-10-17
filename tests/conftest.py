@@ -1,4 +1,3 @@
-import asyncio
 import math
 import os
 import struct
@@ -10,15 +9,22 @@ import wave
 os.environ["CLAUDE_PHONE_HOME"] = tempfile.mkdtemp(prefix="cphone-test-")
 os.environ["CLAUDE_CONFIG_DIR"] = tempfile.mkdtemp(prefix="cphone-test-claude-")  # session transcripts
 
-import pytest  # noqa: E402
+import pytest
 
-from claude_phone import config, configedit, daemon  # noqa: E402
+from claude_phone import config, configedit, daemon
 
 
 @pytest.fixture(autouse=True)
 def fresh_db():
     config.HOME.mkdir(parents=True, exist_ok=True)
     config.DB_PATH.unlink(missing_ok=True)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def fresh_config():
+    """No settings or LAN address kept from an earlier test, which may have patched detect_lan_ip."""
+    config.forget()
     yield
 
 
@@ -47,11 +53,5 @@ def write_wav():
 
 @pytest.fixture
 def controller() -> daemon.Controller:
-    """The daemon's Controller as __init__ leaves it, but with no event socket: nothing connects or starts."""
-    c = daemon.Controller.__new__(daemon.Controller)
-    c.s = config.load()
-    c.esl = None
-    c.line = asyncio.Lock()
-    c.calls, c.greeting_retry, c.warming, c.registered = {}, {}, None, {}
-    c.meeting, c.window, c.released, c.phone_dnd, c.dnd_ours = None, set(), set(), False, False
-    return c
+    """The daemon's Controller with no event socket: nothing connects or starts."""
+    return daemon.Controller(config.load(), esl=None)

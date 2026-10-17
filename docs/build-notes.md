@@ -62,6 +62,19 @@ music until its next turn. Claude Code writes the interrupt to the session's tra
 daemon checks the end of the transcript before holding a call and when listing sessions. A Notification hook on
 `idle_prompt` was tried first: it never fired in VS Code's terminal.
 
+**Permissions.** The PreToolUse hook (`phone hook pre-tool`) answers "allow" in two cases:
+- `call_<name>` and `notify_<name>` change no files, so they need no allow rule. That goes for a subagent's call
+  too: the hook handles `pre-tool` before it ignores subagent events. Changing settings and `transfer_call` still ask.
+- `EnterPlanMode`, but only when the session's latest prompt was typed in by phone (the injection log and the
+  UserPromptSubmit hook's prompt match). Its approval prompt would otherwise wait in a terminal nobody is watching.
+  Typed at the keyboard it asks as usual, and `ExitPlanMode`, which approves the plan, always asks.
+
+In plan mode Claude Code asks before any hook or allow rule runs, so the hook can't help there. What does is the
+tools' MCP annotation: `call_`, `notify_` and `phone_settings` carry `read_only_hint` (`mcp_server.READ_ONLY`), and
+plan mode lets read-only tools run without a prompt. Ringing a phone isn't "read only" in a strict sense, but it
+changes no files or settings, which is what plan mode guards. Don't remove the hint to be precise: plan mode would
+then stop every call for approval.
+
 ## 5. Timeouts
 
 There are two recording limits.
@@ -124,9 +137,35 @@ from the ICS feed that Google Calendar and Outlook publish (`claude_phone/diary.
   names like "lemon stand" come back as near-misses. 8 kHz phone audio is fine. On a 6-core CPU without a GPU
   (Ryzen 5 5500, `whisper-blas-bin-x64`): `small.en-q5_1` takes ~1.8 s per answer, `large-v3-turbo` ~8.4 s and
   `base.en` ~0.55 s, so `small.en` is the default.
-- **Text to speech:** the Windows voices through System.Speech, rendered straight to 16 kHz mono WAV; the text is
-  passed outside the PowerShell script, never spliced into it. ElevenLabs is optional and falls back to Windows
-  speech if it fails.
+- **Every voice renders to a 16 kHz mono WAV**, cached by a hash of engine, voice and text. Any voice but Windows'
+  falls back to the Windows voice if it fails, so a call is never silent. `phone voice` switches between them.
+- **Windows voices.** Windows has two sets: System.Speech's ("Microsoft Zira Desktop") and OneCore's ("Microsoft
+  Mark"), which System.Speech can't see. `phone voice` lists both. A System.Speech voice is written straight to
+  16 kHz; a OneCore one comes as WAV at its own rate and is converted when it isn't 16 kHz already.
+- **The Windows worker.** One PowerShell process per daemon (or `phone` command) loads System.Speech once and
+  renders a sentence per JSON request, so the text is data and never part of the script. Starting PowerShell for
+  each sentence cost 0.34-0.45 s; through the worker a sentence takes ~0.02 s after the first (~0.4 s, as it
+  starts). It stops after 10 minutes unused. A voice it doesn't know makes it look at the installed voices again
+  (one installed since it started), and a OneCore failure leaves the default voice speaking (logged in
+  `logs\voiceworker-windows.log`). If the worker itself is down (won't start, dies, or doesn't answer within 20 s
+  at first and 30 s after), a one-off script per sentence speaks for the next 5 minutes. An error it answers
+  with (a bad output path, say) is raised as it is: the script would fail the same way.
+- **Piper and Kokoro** (optional, downloaded by `phone voice`) speak from a Python worker process each, with their
+  packages under `~/.claude-phone/engines`, outside the venv. Loading a model takes a while (measured 6.4 s Piper,
+  2.3 s Kokoro) and holds 150-250 MB, so a worker keeps it until 10 minutes unused, then exits to give the memory
+  back. Each model speaks "Ready." once into nothing as it loads: the first inference is several times slower.
+- **onnxruntime, which both use,** takes every core and spins its threads between steps by default, which made the
+  start of a call stutter. The workers give it half the physical cores, sleeping when idle, at below-normal
+  priority: Kokoro then renders at 0.45× real time instead of 0.36×, still well ahead of playback.
+- **A sentence at a time.** A call's speech is split into sentences (a short one is kept with the next) and played
+  as each is rendered, so a long message starts at once instead of after the whole render (Kokoro kept a caller
+  waiting ~20 s for 50 seconds of speech). The greeting is a part of its own. While Piper or Kokoro is still
+  loading, nothing plays until the first sentence is ready too, which the ringing mostly hides.
+- **Greetings rendered ahead.** Every minute the daemon renders each live session's greeting and the meeting
+  whisper if they aren't cached, without the Windows fallback, so a broken voice shows in the log. One that fails
+  waits 10 minutes before it's tried again, rather than holding up a call's speech every minute.
+- **ElevenLabs** is optional and needs a key (`phone voice key`); `elevenlabs_v3` acts out tags like
+  "[whispers]".
 
 ## 10. Choppy or slow voice
 

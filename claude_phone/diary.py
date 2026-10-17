@@ -3,8 +3,8 @@
 Each feed's link is a secret (anyone with it can read the calendar), kept in the keychain as calendar-<source> by
 `phone calendar add`; `calendar_sources` picks which feeds are read. A feed is fetched gzipped at most every
 calendar_refresh_minutes (asking "if modified", though Google ignores that) and parsed only when its content
-changed: its meetings for the next few days are kept and the parsed calendar is dropped. Times keep each event's own zone
-and are shown in the PC's. The calendar libraries are an optional extra, imported only when a feed is read."""
+changed: its meetings for the next few days are kept and the parsed calendar is dropped. Times keep each event's own
+zone and are shown in the PC's. The calendar libraries are an optional extra, imported only when a feed is read."""
 
 from __future__ import annotations
 
@@ -22,7 +22,6 @@ from . import config, keychain, log
 
 lg = log.get("diary")
 
-SOURCES = ("google", "outlook")
 LIBRARIES = '"icalendar>=7" "recurring-ical-events>=3.8" tzdata'  # the `calendar` extra in pyproject.toml
 MAX_BYTES = 20 * 1024 * 1024
 TIMEOUT_SECONDS = 15  # per network wait
@@ -89,7 +88,7 @@ def _linked(source: str) -> bool:
 
 
 def _selected(s: config.Settings) -> list[str]:
-    return [x for x in (str(v).strip().lower() for v in s.calendar_sources) if x in SOURCES]
+    return [x for x in (str(v).strip().lower() for v in s.calendar_sources) if x in config.CALENDAR_SOURCES]
 
 
 def reason(e: Exception, url: str = "") -> str:
@@ -304,7 +303,7 @@ def status() -> list[dict]:
     chosen = _selected(s)
     out = []
     with _lock:
-        for x in SOURCES:
+        for x in config.CALENDAR_SOURCES:
             f = _feed(x, now, s) if x in chosen else None
             out.append({"source": x, "selected": x in chosen, "linked": f is not None or _linked(x),
                         "name": f.name if f else "", "fetched": f.fetched if f else None,

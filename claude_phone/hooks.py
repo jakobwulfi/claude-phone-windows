@@ -9,7 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import inject, log, registry
+from . import log, registry  # inject (urllib, psutil) only for session-start: the other hooks run on every turn
 
 
 def _git(cwd: str, *args: str) -> str | None:
@@ -64,9 +64,13 @@ def run(event: str) -> int:
         sid = payload.get("session_id") or os.environ.get("CLAUDE_CODE_SESSION_ID")
         if not sid:
             return 0
+        if event == "pre-tool":  # a subagent's tool calls too: they ask for approval like the parent's
+            pre_tool(sid, payload)
+            return 0
         if payload.get("agent_id"):
             return 0  # subagent events share the parent's session; nothing to register
         if event == "session-start":
+            from . import inject
             cwd = payload.get("cwd") or os.getcwd()
             term = inject.terminal_id()
             if not term:
@@ -83,8 +87,6 @@ def run(event: str) -> int:
         elif event == "prompt":
             registry.set_status(sid, "working")
             registry.record_prompt(sid, str(payload.get("prompt") or ""))
-        elif event == "pre-tool":
-            pre_tool(sid, payload)
         elif event == "stop":
             registry.set_status(sid, "idle")
     except Exception as e:  # never block Claude Code

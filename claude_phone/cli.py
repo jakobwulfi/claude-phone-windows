@@ -2,29 +2,23 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
-import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from collections.abc import Callable
 
 import psutil
 
-from . import config, keychain, registry
+# keychain (keyring) and urllib.request are imported where they're used: together they were half a hook's start-up.
+from . import config, procs, registry
 
-RUN = config.HOME / "run"
-# Services outlive the console that ran `phone up`.
-# A hidden console, not none (DETACHED_PROCESS): the venv's python.exe is a launcher, and the real interpreter it
-# starts would open a console window of its own, where closing it kills the daemon.
-DETACHED = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
-STOP_TIMEOUT_S = 5
 MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{}"
 
 
@@ -35,6 +29,7 @@ RTP_START, RTP_END = 16384, 16484
 
 
 def render_freeswitch_config() -> None:
+    from . import keychain
     s = config.load()
     if not s.lan_ip:
         sys.exit(f"No LAN address found: connect to the network, or set lan_ip in {config.CONFIG_FILE}")
@@ -61,30 +56,8 @@ def freeswitch_argv(s: config.Settings) -> list[str]:
     return [s.freeswitch_exe, "-nonat", "-nonatmap", *(x for flag, d in dirs.items() for x in (flag, str(d)))]
 
 
-def freeswitch_api(cmd: str) -> str:
-    """One FreeSWITCH command, for the command line."""
-    from . import esl
-    return esl.api_sync(cmd, config.load().esl_port, keychain.get_or_create("esl"))
 
-
-# --- processes ---
-
-# A pid file outlives a reboot, and Windows soon gives its PID to another program. So the PID is the service only if
-# that process started before the file was written (seen 2026-10-16: Spotify had the daemon's PID after a restart).
-PID_FILE_SLACK_S = 2
-
-
-def _pid(name: str) -> int | None:
-    f = RUN / f"{name}.pid"
-    try:
-        pid = int(f.read_text())
-        written = f.stat().st_mtime
-        # Not os.kill(pid, 0): on Windows that terminates the process instead of probing it.
-        started = psutil.Process(pid).create_time()
-    except (OSError, ValueError, psutil.Error):
-        return None
-    return pid if started <= written + PID_FILE_SLACK_S else None
-
+# --- services ---
 
 @dataclass(frozen=True)
 class Service:
@@ -95,46 +68,52 @@ class Service:
 
 
 def _spawn(name: str, svc: Service, s: config.Settings) -> None:
-    if _pid(name):
+    if procs.pid(name):
         print(f"{name}: already running")
         return
-    RUN.mkdir(parents=True, exist_ok=True)
     env = {**os.environ, **svc.env} if svc.env else None
-    # The child keeps its own handle to the output file.
-    with open(config.LOGS / f"{name}.out", "a") as out:
-        p = subprocess.Popen(svc.argv(s), stdout=out, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                             creationflags=DETACHED | svc.priority, env=env)
-    (RUN / f"{name}.pid").write_text(str(p.pid))
-    print(f"{name}: started (pid {p.pid})")
+    pid = procs.spawn(name, svc.argv(s), config.LOGS / f"{name}.out", svc.priority, env)
+    print(f"{name}: started (pid {pid})")
 
 
 def _stop(name: str) -> None:
-    pid = _pid(name)
-    if not pid:
-        (RUN / f"{name}.pid").unlink(missing_ok=True)  # left by a crash or a reboot
-        print(f"{name}: not running")
-        return
+    if name == "daemon" and procs.pid(name):
+        _ask_daemon_to_stop()
+    print(f"{name}: {'stopped' if procs.stop(name) else 'not running'}")
+
+
+def _ask_daemon_to_stop() -> None:
+    """The daemon hangs up its calls, then exits; ended from outside, it would leave them open. One that doesn't
+    answer is ended anyway."""
+    import urllib.request
+    req = urllib.request.Request(f"{config.load().daemon_url}/shutdown", data=b"{}", method="POST")
     try:
-        proc = psutil.Process(pid)
-        proc.terminate()
-        proc.wait(timeout=STOP_TIMEOUT_S)
-    except (psutil.NoSuchProcess, psutil.TimeoutExpired):
+        urllib.request.urlopen(req, timeout=procs.STOP_TIMEOUT_S).close()
+    except OSError:
         pass
-    (RUN / f"{name}.pid").unlink(missing_ok=True)
-    print(f"{name}: stopped")
 
 
 def model_path() -> Path:
     return config.MODELS / config.load().whisper_model
 
 
-def ensure_model() -> None:
+def ensure_model(keep_alive: Callable[[], None] = lambda: None) -> None:
+    """Downloads the speech model if it's missing, calling keep_alive every LOCK_TOUCH_S meanwhile."""
+    import urllib.request
     p = model_path()
-    if not p.exists():
-        print(f"downloading {p.name} ...")
-        config.MODELS.mkdir(parents=True, exist_ok=True)
-        urllib.request.urlretrieve(MODEL_URL.format(p.name), p.with_suffix(".part"))
-        p.with_suffix(".part").replace(p)
+    if p.exists():
+        return
+    print(f"downloading {p.name} ...")
+    config.MODELS.mkdir(parents=True, exist_ok=True)
+    last = time.monotonic()
+
+    def progress(blocks: int, block_size: int, total: int) -> None:
+        nonlocal last
+        if time.monotonic() - last >= LOCK_TOUCH_S:
+            last = time.monotonic()
+            keep_alive()
+    urllib.request.urlretrieve(MODEL_URL.format(p.name), p.with_suffix(".part"), reporthook=progress)
+    p.with_suffix(".part").replace(p)
 
 
 def py_argv(*args: str) -> list[str]:
@@ -166,13 +145,15 @@ SERVICES = {
 
 
 # VS Code windows restored together each run `phone up` (autostart). The first takes this lock and the others leave
-# the starting to it. A lock older than this was left by an `up` that was killed.
+# the starting to it. A lock older than this was left by an `up` that was killed; a live one touches its lock every
+# LOCK_TOUCH_S while it downloads the speech model.
 UP_LOCK_STALE_S = 300
+LOCK_TOUCH_S = 30
 
 
 def _take_up_lock() -> Path | None:
-    lock = RUN / "up.lock"
-    RUN.mkdir(parents=True, exist_ok=True)
+    lock = procs.RUN / "up.lock"
+    procs.RUN.mkdir(parents=True, exist_ok=True)
     try:
         if time.time() - lock.stat().st_mtime > UP_LOCK_STALE_S:
             lock.unlink(missing_ok=True)
@@ -194,17 +175,38 @@ def cmd_up(a) -> None:
     try:
         config.remember_phone_exe()
         s = config.load()
-        render_freeswitch_config()
-        ensure_model()
         names = [a.only] if a.only else list(SERVICES)
+        # Each only for the service that reads it: `phone up daemon` works away from home, without a LAN address.
+        if "freeswitch" in names:
+            render_freeswitch_config()
+        if "whisper" in names:
+            ensure_model(keep_alive=lambda: os.utime(lock))
+        # The next service relies on these: the daemon connects to FreeSWITCH's event socket and to whisper.
+        ports = {"freeswitch": s.esl_port, "whisper": s.whisper_port}
         for n in names:
             _spawn(n, SERVICES[n], s)
-            if n == "freeswitch":
-                time.sleep(3)
-            if n == "whisper":
-                time.sleep(2)
+            if n in ports and not _answers(ports[n], SERVICE_WAIT_S):
+                print(f"{n}: not answering on port {ports[n]} after {SERVICE_WAIT_S} s "
+                      f"(see {config.LOGS / f'{n}.out'})")
     finally:
         lock.unlink(missing_ok=True)
+
+
+SERVICE_WAIT_S = 15  # how long `phone up` waits for a service to answer before going on without it
+
+
+def _answers(port: int, wait_s: float) -> bool:
+    """Something accepts connections on 127.0.0.1:port within wait_s. whisper-server only listens once its model
+    has loaded, so for it this means ready."""
+    deadline = time.monotonic() + wait_s
+    while True:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=1):
+                return True
+        except OSError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.25)
 
 
 def cmd_down(a) -> None:
@@ -240,6 +242,7 @@ def audio_usage() -> str:
 # Claude Code event -> `phone hook` argument. README "Claude Code wiring" has the settings for each.
 HOOKS = {"SessionStart": "session-start", "SessionEnd": "session-end", "UserPromptSubmit": "prompt",
          "Stop": "stop", "PreToolUse": "pre-tool"}
+HOOK_EVENTS = tuple(HOOKS.values())
 
 
 def claude_settings_file() -> Path:
@@ -263,27 +266,31 @@ def cmd_status(a) -> None:
     w = config.ip_warning()
     if w:
         print("WARNING:", w)
+    for problem in config.problems():
+        print(f"WARNING: {config.CONFIG_FILE}: {problem}")
     missing = missing_hooks()
     if missing:
         print(f"WARNING: Claude Code's settings ({claude_settings_file()}) don't run `phone hook` for "
               f"{', '.join(missing)}. Copy those hooks from the README's \"Claude Code wiring\".")
     for n in SERVICES:
-        pid = _pid(n)
+        pid = procs.pid(n)
         print(f"{n:9} {'running pid ' + str(pid) if pid else 'stopped'}")
     print(f"{'audio':9} {audio_usage()}")
-    from . import voices
+    import urllib.request
+
+    from . import esl, voices
     print(f"{'voice':9} {voices.current().spec}")
     try:
         with urllib.request.urlopen(f"{config.load().daemon_url}/health", timeout=3) as r:
             print("health   ", json.loads(r.read()))
     except Exception as e:
         print("health    unavailable:", e)
-    if _pid("freeswitch"):
+    if procs.pid("freeswitch"):
         # Ask the SIP profile: `show registrations` reads a table that survives FreeSWITCH restarts.
         s = config.load()
         for ext in dict.fromkeys((s.ring_ext, s.desk_ext, s.softphone_ext)):
             try:
-                contact = freeswitch_api(f"sofia_contact internal/{ext}@{s.lan_ip}").strip()
+                contact = esl.api_local(f"sofia_contact internal/{ext}@{s.lan_ip}").strip()
             except Exception as e:
                 contact = f"unavailable: {e}"
             state = "not registered" if contact.startswith("error/") else contact
@@ -296,12 +303,13 @@ def cmd_list(a) -> None:
         print("No live sessions.")
         return
     print(f"{'EXT':4} {'REPO':22} {'BRANCH':28} {'STATUS':8} {'RING':5} SINCE")
+    overrides = config.load().repo_ringtones
     for s in rows:
         b = s.branch or ""
         if s.worktree:
             b = f"{b} [{s.worktree}]"
         since = datetime.fromtimestamp(s.started_at).strftime("%H:%M")
-        ring = config.load().repo_ringtones.get(s.repo) or registry.ringtone(s.repo)
+        ring = overrides.get(s.repo) or registry.ringtone(s.repo)
         print(f"{s.ext:<4} {s.repo[:22]:22} {b[:28]:28} {s.status:8} {ring:<5} {since}")
 
 
@@ -336,6 +344,7 @@ def cmd_mcp(a) -> None:
 
 
 def cmd_secret(a) -> None:
+    from . import keychain
     print(keychain.get_or_create(a.name))
 
 
@@ -344,10 +353,18 @@ def cmd_hold_music(a) -> None:
     print(hold.generate(a.prompt or hold.DEFAULT_PROMPT, a.seconds))
 
 
+def cmd_desk_cert(a) -> None:
+    """Forgets the desk phone's pinned certificate, for a new or factory-reset phone (which makes a new one)."""
+    from . import screen
+    registry.set_state(screen.CERT_STATE, None)
+    print("Forgot the desk phone's certificate; the next screen push or key press pins the one it shows then.")
+
+
 def cmd_push(a) -> None:
     from . import push
     if a.action == "test":
-        print("sent" if push.send("Claude Phone", "Test push: missed calls will show up here.") else "failed (see phone.log)")
+        sent = push.send("Claude Phone", "Test push: missed calls will show up here.")
+        print("sent" if sent else "failed (see phone.log)")
         return
     t = push.create_topic()
     print(f"In the ntfy app, subscribe to this topic on {config.load().ntfy_server}:\n\n  {t}\n\n"
@@ -355,6 +372,7 @@ def cmd_push(a) -> None:
 
 
 def cmd_meeting_test(a) -> None:
+    import urllib.request
     req = urllib.request.Request(f"{config.load().daemon_url}/meeting-test", data=b"{}", method="POST")
     with urllib.request.urlopen(req, timeout=60) as r:
         print(json.loads(r.read()))
@@ -375,7 +393,7 @@ def cmd_meetings(a) -> None:
 
 
 def cmd_calendar(a) -> None:
-    from . import diary
+    from . import diary, keychain
     if a.action == "remove":
         keychain.delete(f"calendar-{a.source}")
         print(f"Removed the {a.source.capitalize()} calendar link.")
@@ -396,6 +414,8 @@ def cmd_calendar(a) -> None:
 def add_calendar(source: str) -> None:
     """The link is a secret: read without echo (or from a pipe), so it stays out of shell history and logs."""
     import getpass
+
+    from . import keychain
     from . import diary
     print(f"Paste the {source.capitalize()} calendar's secret ICS link (it won't be shown), then press Enter.")
     raw = getpass.getpass("link: ") if _interactive() else sys.stdin.readline()
@@ -422,12 +442,18 @@ def cmd_config(a) -> None:
         render_freeswitch_config()
         print(f"FreeSWITCH config written to {config.FREESWITCH_CONF}. Run `phone restart freeswitch` to use it.")
         return
+    if a.action == "migrate":
+        try:
+            print(configedit.migrate())
+        except ValueError as e:
+            sys.exit(f"Not changed: {e}")
+        return
     if a.action in ("get", "set", "unset") and not a.key:
         sys.exit(f"Usage: phone config {a.action} <setting>" + (" <value>" if a.action == "set" else ""))
     if a.action == "set" and not a.value:
         sys.exit("Usage: phone config set <setting> <value>")
     if (a.action != "set" and a.value) or (not a.action and a.key):
-        sys.exit("Usage: phone config [get <setting> | set <setting> <value> | unset <setting> | render]")
+        sys.exit("Usage: phone config [get <setting> | set <setting> <value> | unset <setting> | render | migrate]")
     try:
         if a.action == "get":
             print(configedit.get(a.key))
@@ -548,6 +574,12 @@ def main(argv: list[str] | None = None) -> None:
     # Windows error messages come in the system language (æøå), which a console's code page may not cover.
     for stream in (sys.stdout, sys.stderr):
         stream.reconfigure(errors="replace")
+    args = sys.argv[1:] if argv is None else argv
+    if len(args) == 2 and args[0] == "hook" and args[1] in HOOK_EVENTS:
+        # Every prompt and turn runs one, as a process of its own: straight there, before argparse and its imports.
+        from . import hooks
+        sys.exit(hooks.run(args[1]))
+    import argparse
     p = argparse.ArgumentParser(prog="phone")
     sub = p.add_subparsers(dest="cmd", required=True)
     for name, fn in (("up", cmd_up), ("down", cmd_down), ("restart", cmd_restart)):
@@ -562,7 +594,7 @@ def main(argv: list[str] | None = None) -> None:
     sp.add_argument("text")
     sp.set_defaults(fn=cmd_type)
     sp = sub.add_parser("hook")
-    sp.add_argument("event", choices=["session-start", "session-end", "prompt", "stop", "pre-tool"])
+    sp.add_argument("event", choices=HOOK_EVENTS)
     sp.set_defaults(fn=cmd_hook)
     sub.add_parser("daemon").set_defaults(fn=cmd_daemon)
     sub.add_parser("prerender", help="render the fixed phrases in the current voice").set_defaults(fn=cmd_prerender)
@@ -574,6 +606,9 @@ def main(argv: list[str] | None = None) -> None:
     sp.add_argument("prompt", nargs="?")
     sp.add_argument("--seconds", type=int, default=60)
     sp.set_defaults(fn=cmd_hold_music)
+    sp = sub.add_parser("desk-cert", help="desk-cert reset: forget the desk phone's certificate (a new or reset phone)")
+    sp.add_argument("action", choices=["reset"])
+    sp.set_defaults(fn=cmd_desk_cert)
     sp = sub.add_parser("push", help="set up (or test) missed-call pushes to the ntfy app")
     sp.add_argument("action", nargs="?", choices=["setup", "test"], default="setup")
     sp.set_defaults(fn=cmd_push)
@@ -586,16 +621,16 @@ def main(argv: list[str] | None = None) -> None:
                                               "remove <engine:name> | key")
     sp.add_argument("--download", action="store_true", help="download the voice if needed, without asking")
     sp.set_defaults(fn=cmd_voice)
-    sub.add_parser("meeting-test", help="preview a meeting alert (whisper and screen)").set_defaults(fn=cmd_meeting_test)
+    sp = sub.add_parser("meeting-test", help="preview a meeting alert (whisper and screen)")
+    sp.set_defaults(fn=cmd_meeting_test)
     sub.add_parser("meetings", help="upcoming meetings the alerts will use").set_defaults(fn=cmd_meetings)
-    from . import diary
     sp = sub.add_parser("calendar", help="the calendar feeds for meeting alerts: show, add or remove a link")
     sp.add_argument("action", nargs="?", choices=["add", "remove"])
-    sp.add_argument("source", nargs="?", choices=diary.SOURCES)
+    sp.add_argument("source", nargs="?", choices=config.CALENDAR_SOURCES)
     sp.set_defaults(fn=cmd_calendar)
     sp = sub.add_parser("config", help="show or change settings: config [get|set|unset] <setting> [value]; "
-                        "config render rewrites the FreeSWITCH config")
-    sp.add_argument("action", nargs="?", choices=["get", "set", "unset", "render"])
+                        "config render rewrites the FreeSWITCH config; config migrate rewrites old voice settings")
+    sp.add_argument("action", nargs="?", choices=["get", "set", "unset", "render", "migrate"])
     sp.add_argument("key", nargs="?")
     sp.add_argument("value", nargs="*")
     sp.set_defaults(fn=cmd_config)
@@ -605,7 +640,7 @@ def main(argv: list[str] | None = None) -> None:
     sp.set_defaults(fn=cmd_change_phone)
     a = p.parse_args(argv)
     if a.cmd == "calendar" and a.action and not a.source:
-        p.error(f"phone calendar {a.action} needs a source: {' or '.join(diary.SOURCES)}")
+        p.error(f"phone calendar {a.action} needs a source: {' or '.join(config.CALENDAR_SOURCES)}")
     a.fn(a)
 
 

@@ -1,6 +1,9 @@
 # Copy to %USERPROFILE%\.claude-phone\config.toml. Every key is optional; the values shown are the defaults unless
 # the comment says otherwise. Keys marked [phone config] can also be changed with `phone config set <key> <value>`,
-# `/claude-phone config set …` or by asking Claude; the rest only here. Then run `phone restart daemon`.
+# `/claude-phone config set …` or by asking Claude; the rest only here. Then restart what reads the setting:
+#   phone restart daemon       most settings
+#   phone restart freeswitch   lan_ip, sip_port, esl_port, desk_ext, softphone_ext (esl_port: the daemon too)
+#   phone restart whisper      whisper_server, whisper_model, whisper_language, whisper_port (the port: the daemon too)
 owner_name = "Sam"      # [phone config] spoken and typed as "Sam"; the tools become call_sam and notify_sam
 # autostart = true      # [phone config] on/off; start claude-phone when VS Code opens (default: only by `phone up`)
 # lan_ip = "192.168.1.50"     # default: this PC's address. Pin it once the router reserves it
@@ -18,15 +21,12 @@ ring_seconds = 25       # [phone config] 10-40; keep ring_seconds + record_secon
 record_seconds = 60     # answers to Claude's calls
 message_seconds = 300   # messages you dial in (sessions, all-hands, voicemail replies), 30-600
 callerid_max = 17       # [phone config] 10-40; the T31P shows 17 characters before scrolling
-# Claude's voice as engine:name: windows (built in), piper or kokoro (free, offline, downloaded on request) or
-# elevenlabs (paid; `phone voice key`). Set it with `phone voice`, which lists them and asks before downloading.
-# voice = "windows:Microsoft Mark"
-# When voice is empty, these apply:
-tts_provider = "sapi"   # Windows voices, or "elevenlabs" (ELEVENLABS_API_KEY or Credential Manager claude-phone/elevenlabs)
-sapi_voice = ""         # empty: the Windows default voice. `phone voice` lists the installed ones
-operator_provider = "sapi"  # dial 0; "elevenlabs" with an ElevenLabs voice id below
-operator_voice = "Microsoft Zira Desktop"
-# elevenlabs_voice_id = "JBFqnCBsd6RMkjVDRZzb"
+# Voices are engine:name: windows (built in), piper or kokoro (free, offline, downloaded on request) or elevenlabs
+# (paid; `phone voice key`); an engine alone is its default voice. `phone voice` lists them and asks before
+# downloading. (Older settings such as tts_provider and sapi_voice still work, and `phone config` or `phone voice`
+# rewrites them in this form.)
+# voice = "windows:Microsoft Mark"            # Claude's voice; default: the Windows default voice
+operator_voice = "windows:Microsoft Zira Desktop"  # dial 0
 # elevenlabs_model = "eleven_turbo_v2_5"
 
 # Speech to text
@@ -43,15 +43,14 @@ operator_voice = "Microsoft Zira Desktop"
 # phonebook_port = 8766   # the T31P's Directory and DND key, on lan_ip (limited to lan_cidr)
 
 # Per-repo voices
-# [repo_voices.lemon-stand]
-# provider = "sapi"
-# voice = "Microsoft David Desktop"
+# [repo_voices]
+# lemon-stand = "windows:Microsoft David Desktop"
 
 # Per-repo ringtones (Yealink Ring1-8). Unlisted repos get the least-used ring on first sight.
 # [repo_ringtones]
 # lemon-stand = 3
 
-# Call summaries on a Yealink desk phone's screen (docs/t31p-setup.md step 11)
+# Call summaries on a Yealink desk phone's screen (docs/t31p-setup.md step 12)
 # screen_push = true
 # desk_ip = "192.168.1.60"  # default: the address the desk phone registered from
 
@@ -64,8 +63,7 @@ operator_voice = "Microsoft Zira Desktop"
 # calendar_email = "you@example.com"  # to skip meetings you declined; default: the calendar's name, if an address
 # The whisper before a meeting, played on the speaker without ringing. "elevenlabs_v3" acts out tags like "[whispers]".
 # whisper_text = "Pssst. You have a meeting."  # [phone config] up to 120 characters
-# whisper_provider = ""  # empty: Claude's voice; or windows, piper, kokoro, elevenlabs, elevenlabs_v3
-# whisper_voice = ""     # a voice of that engine, e.g. "Microsoft Zira Desktop" or "bf_emma"
+# whisper_voice = "kokoro:bf_emma"  # default: Claude's voice
 
 # Missed-call pushes to the ntfy app (README: "Missed-call pushes"). The topic is a secret: `phone push`.
 # ntfy_server = "https://ntfy.sh"

@@ -103,7 +103,8 @@
             <param name="force-register-domain" value="$${domain}"/>
             <param name="force-register-db-domain" value="$${domain}"/>
             <param name="force-subscription-domain" value="$${domain}"/>
-            <!-- The message light: phones subscribe to message-summary, the daemon sends MESSAGE_WAITING. -->
+            <!-- Presence handling, which the message light's NOTIFY goes through. Phones needn't subscribe: with MWI
+                 subscription off they take the unsolicited NOTIFY that the daemon's MESSAGE_WAITING triggers. -->
             <param name="manage-presence" value="true"/>
             <param name="presence-hosts" value="$${domain}"/>
             <param name="rtp-timeout-sec" value="300"/>

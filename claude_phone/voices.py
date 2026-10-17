@@ -20,14 +20,14 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from collections.abc import Callable
 
 from . import config, keychain, tts
 
 LOCAL = ("windows", "piper", "kokoro")
 ENGINES = (*LOCAL, "elevenlabs")
 PIP = {"piper": "piper-tts==1.8.0", "kokoro": "kokoro-onnx==0.6.1"}
-# On disk once installed, with onnxruntime and numpy (measured on Windows x64, Python 3.13, 2026-10-16).
+# On disk once installed, with onnxruntime and numpy (measured on Windows x64, Python 3.13).
 ENGINE_BYTES = {"piper": 152_000_000, "kokoro": 129_000_000}
 INSTALLED_MARK = ".installed"  # written last, so a half-finished install doesn't count
 PIP_TIMEOUT_S = 900
@@ -41,7 +41,6 @@ KOKORO_FILES = {
     "kokoro-v1.0.int8.onnx": (92_361_271, "6e742170d309016e5891a994e1ce1559c702a2ccd0075e67ef7157974f6406cb"),
     "voices-v1.0.bin": (28_214_398, "bca610b8308e8d99f32e6fe4197e7ec01679264efed0cac9140fe9c29f1fbf7d"),
 }
-KOKORO_DEFAULT = "af_heart"
 # The first letter is the language (a American English, b British, e Spanish, f French, h Hindi, i Italian,
 # j Japanese, p Portuguese, z Chinese), the second f or m.
 KOKORO_VOICES = (
@@ -99,11 +98,6 @@ def _cap(text: str) -> str:
     return text[:1].upper() + text[1:]
 
 
-def _engine(word: str) -> str:
-    word = word.strip().lower()
-    return "windows" if word == "sapi" else word
-
-
 # --- where things live ---
 
 def engine_dir(engine: str) -> Path:
@@ -156,19 +150,16 @@ def elevenlabs_key() -> str | None:
 
 def current() -> Voice:
     provider, name = tts.claude_voice()
-    s = config.load()
-    if provider == "sapi":
-        return Voice("windows", name or s.sapi_voice)
     if provider.startswith("elevenlabs"):
-        return Voice("elevenlabs", name or s.elevenlabs_voice_id)
-    return Voice(provider, name or (KOKORO_DEFAULT if provider == "kokoro" else ""))
+        return Voice("elevenlabs", name or tts.ELEVENLABS_DEFAULT)
+    return Voice(provider, name or (tts.KOKORO_DEFAULT if provider == "kokoro" else ""))
 
 
 # --- the voices there are ---
 
 def windows_voices() -> list[tuple[str, str]]:
     """(name, language) of each Windows voice."""
-    return [(*line.split("\t", 1), "")[:2] for line in tts.sapi_voices()]
+    return [(*line.split("\t", 1), "")[:2] for line in tts.windows_voice_lines()]
 
 
 def _fetch(url: str, headers: dict | None = None) -> bytes:
@@ -242,7 +233,7 @@ def resolve(text: str) -> Voice:
     """The voice a user means: "engine:name", "engine" for its default, or a name only one engine has."""
     raw = " ".join(text.split())
     word, sep, name = raw.partition(":")
-    engine, name = _engine(word), name.strip()
+    engine, name = config.engine(word), name.strip()
     if engine not in ENGINES:
         if not sep:
             return _guess(raw)
@@ -250,7 +241,7 @@ def resolve(text: str) -> Voice:
     if engine == "windows":
         return _pick("windows", name, {n.lower(): n for n, _ in windows_voices()}) if name else DEFAULT
     if engine == "kokoro":
-        return _pick("kokoro", name, {n: n for n in KOKORO_VOICES}) if name else Voice("kokoro", KOKORO_DEFAULT)
+        return _pick("kokoro", name, {n: n for n in KOKORO_VOICES}) if name else Voice("kokoro", tts.KOKORO_DEFAULT)
     if engine == "piper":
         if not name:
             raise ValueError("which Piper voice? `phone voice list piper en_US` lists the American English ones")
@@ -390,11 +381,11 @@ def _save(v: Voice) -> None:
     spec = v.spec
     if v.engine == "elevenlabs" and v.name and tts.claude_voice()[0] == "elevenlabs_v3":
         spec = f"elevenlabs_v3:{v.name}"  # keep Eleven v3, which acts out audio tags such as "[whispers]"
-    configedit._write("voice", spec)
+    configedit.write_setting("voice", spec)
 
 
 def _back_to_windows() -> str:
-    """Switches to the Windows voice (sapi_voice, if one is set) and says which voice that is."""
+    """Switches to the Windows default voice and says which voice that is."""
     _save(DEFAULT)
     return f"Claude now speaks with {current().label}. "
 
@@ -430,10 +421,6 @@ def try_voice(text: str) -> str:
     return _speak(v, SAMPLE)
 
 
-def _provider(v: Voice) -> str:
-    return "sapi" if v.engine == "windows" else v.engine
-
-
 def _failed(v: Voice, e: Exception) -> ValueError:
     return ValueError(f"{v.label} didn't work ({e}); Claude still speaks with {current().label}")
 
@@ -441,7 +428,7 @@ def _failed(v: Voice, e: Exception) -> ValueError:
 def _speak(v: Voice, text: str) -> str:
     """Speech in exactly this voice: a broken engine raises instead of the Windows voice standing in for it."""
     try:
-        return tts.render(text, voice=(_provider(v), v.name or None), fallback=False)
+        return tts.render(text, voice=(v.engine, v.name or None), fallback=False)
     except Exception as e:
         raise _failed(v, e) from None
 
@@ -452,7 +439,7 @@ def _check(v: Voice) -> None:
     out = config.SOUNDS / "tts" / f"check-{os.getpid()}.tmp.wav"
     out.parent.mkdir(parents=True, exist_ok=True)
     try:
-        tts.PROVIDERS[_provider(v)].render(SAMPLE, v.name or None, out)
+        tts.PROVIDERS[v.engine].render(SAMPLE, v.name or None, out)
     except Exception as e:
         raise _failed(v, e) from None
     finally:
@@ -506,7 +493,7 @@ def _delete(paths: list[Path], engine: str) -> int:
         # Stopped again between tries: a render that was under way when the worker was stopped starts a new one.
         _retry(move, f"{p} is in use; stop claude-phone (`phone down`) and try again",
                lambda: voiceworker.stop_all(engine))
-    for attempt in range(DELETE_TRIES):
+    for _ in range(DELETE_TRIES):
         try:
             _sweep()
             break
@@ -519,8 +506,8 @@ def remove(text: str) -> str:
     """Deletes a downloaded voice, or forgets the ElevenLabs key. The voice in use is switched to the Windows
     default voice first. The Windows voices can't be deleted."""
     raw = " ".join(text.split())
-    word, sep, name = raw.partition(":")
-    engine, name = _engine(word), name.strip()
+    word, _, name = raw.partition(":")
+    engine, name = config.engine(word), name.strip()
     if engine not in ENGINES:
         v = resolve(raw)
         engine, name = v.engine, v.name
@@ -564,8 +551,8 @@ def _forget_key(now: Voice) -> str:
 
 
 def _repo_warning(engine: str, name: str) -> str:
-    repos = [r for r, rv in config.load().repo_voices.items()
-             if isinstance(rv, dict) and rv.get("provider") == engine and (not name or rv.get("voice") == name)]
+    used = {r: tts.parse_voice(rv) for r, rv in config.load().repo_voices.items() if isinstance(rv, str)}
+    repos = [r for r, (e, n) in used.items() if e == engine and (not name or n == name)]
     return (f" Note: repo_voices for {', '.join(repos)} used it, so those repos now get the Windows default voice."
             if repos else "")
 
@@ -612,7 +599,7 @@ def describe() -> str:
 
 
 def list_engine(engine: str, match: str = "") -> str:
-    engine, want = _engine(engine), match.strip().lower()
+    engine, want = config.engine(engine), match.strip().lower()
     if engine == "windows":
         rows = [f"windows:{n}  ({lang})" for n, lang in windows_voices()]
     elif engine == "kokoro":

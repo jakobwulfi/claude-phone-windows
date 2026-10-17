@@ -16,9 +16,8 @@ ring_ext = "201"
 callerid_max = 18
 
 # Per-repo voices
-[repo_voices.lemon-stand]
-provider = "sapi"
-voice = "Microsoft David Desktop"
+[repo_voices]
+lemon-stand = "windows:Microsoft David Desktop"
 '''
 
 
@@ -47,21 +46,68 @@ def test_a_change_rewrites_the_file_with_what_each_line_is_for():
         described("callerid_max", "40"),
         "",
         f"# {config.DESCRIPTIONS['repo_voices']}",
-        "[repo_voices.lemon-stand]",
-        'provider = "sapi"',
-        'voice = "Microsoft David Desktop"',
+        "[repo_voices]",
+        'lemon-stand = "windows:Microsoft David Desktop"',
     ]) + "\n"
+
+
+def test_an_old_config_comes_back_in_the_new_form_after_a_change(config_file):
+    config_file.write_text('tts_provider = "sapi"\nsapi_voice = "Microsoft Zira Desktop"\n'
+                           'operator_provider = "sapi"\noperator_voice = "Microsoft David Desktop"\n'
+                           'whisper_provider = "kokoro"\nwhisper_voice = "bf_emma"\n'
+                           '[repo_voices.site]\nprovider = "piper"\nvoice = "en_US-ryan-medium"\n', encoding="utf-8")
+    voices = lambda s: (s.voice, s.operator_voice, s.whisper_voice, s.repo_voices)
+    before = voices(config.load())
+    configedit.set_value("callerid_max", "30")
+    assert saved() == {"voice": "windows:Microsoft Zira Desktop", "operator_voice": "windows:Microsoft David Desktop",
+                       "whisper_voice": "kokoro:bf_emma", "callerid_max": 30,
+                       "repo_voices": {"site": "piper:en_US-ryan-medium"}}
+    assert voices(config.load()) == before and config.problems() == []
+
+
+def test_migrate_rewrites_old_voice_settings_now_and_only_those(config_file):
+    config_file.write_text('callerid_max = 18\noperator_voice = "Microsoft David Desktop"\n', encoding="utf-8")
+    assert configedit.migrate() == ("Rewrote operator_voice in the new form; Claude's voices are the same as "
+                                    "before.")
+    assert saved() == {"callerid_max": 18, "operator_voice": "windows:Microsoft David Desktop"}
+    assert configedit.migrate() == "config.toml has no old voice settings: nothing to rewrite."
+
+
+def test_an_unrelated_change_leaves_new_voice_values_as_written(config_file):
+    # A mistyped engine is the user's to fix (problems() names it), not something to rewrite on their behalf.
+    config_file.write_text('operator_voice = "pipr:en_US-x"\nwhisper_voice = ""\n', encoding="utf-8")
+    configedit.set_value("callerid_max", "30")
+    assert saved() == {"operator_voice": "pipr:en_US-x", "whisper_voice": "", "callerid_max": 30}
 
 
 def test_every_setting_has_a_description():
     assert set(config.DESCRIPTIONS) == {f.name for f in fields(config.Settings)}
 
 
+def test_the_readme_settings_table_says_what_phone_config_says():
+    # Its What and Allowed columns are DESCRIPTIONS and SPECS: a changed range fails here until the README follows.
+    readme = (config.REPO / "README.md").read_text(encoding="utf-8")
+    table = readme.split("| Setting | What | Allowed |")[1].split("\n\n")[0]
+    rows = {}
+    for line in table.splitlines()[2:]:
+        key, what, allowed = (cell.strip().replace("`", "") for cell in line.strip("|").split("|"))
+        rows[key] = (what, allowed)
+    assert rows == {k: (config.DESCRIPTIONS[k].replace("`", ""), spec.allowed.replace("`", ""))
+                    for k, spec in configedit.SPECS.items()}
+
+
+def test_get_and_the_list_say_what_a_setting_is_for_and_what_it_may_be():
+    k = "meeting_warn_minutes"
+    said = f"{config.DESCRIPTIONS[k]} ({configedit.SPECS[k].allowed})"
+    assert said in configedit.get(k) and said in configedit.show()
+
+
 def test_paths_typos_and_line_endings(config_file):
     config_file.write_bytes(b"whisper_server = 'C:\\tools\\whisper.exe'\r\nring_secnds = 3\r\n")
     configedit.set_value("callerid_max", "30")
     text = config_file.read_bytes().decode()
-    assert "whisper_server = 'C:\\tools\\whisper.exe'" in text and "\r\n" in text and "\n" not in text.replace("\r\n", "")
+    assert "whisper_server = 'C:\\tools\\whisper.exe'" in text
+    assert "\r\n" in text and "\n" not in text.replace("\r\n", "")
     assert "ring_secnds = 3" in text and text.count(configedit.TYPO) == 1
     assert saved() == {"whisper_server": "C:\\tools\\whisper.exe", "ring_secnds": 3, "callerid_max": 30}
 
@@ -105,7 +151,7 @@ def test_invalid_values_are_refused_and_nothing_is_written(key, raw, why):
 
 def test_ring_and_record_seconds_must_fit_claude_codes_call_limit():
     configedit.set_value("ring_seconds", "30")  # 30 + the default 60 = 90
-    configedit._write("record_seconds", 65)
+    configedit.write_setting("record_seconds", 65)
     with pytest.raises(ValueError, match=r"record_seconds \(65\) must stay at 90 or less"):
         configedit.set_value("ring_seconds", "26")
 
@@ -113,7 +159,7 @@ def test_ring_and_record_seconds_must_fit_claude_codes_call_limit():
 def test_only_the_listed_settings_can_be_changed_spelled_with_dashes_or_capitals_too():
     with pytest.raises(ValueError, match="can only be changed by editing"):
         configedit.set_value("sip_port", "5080")
-    with pytest.raises(ValueError, match="no setting called 'ringseconds'.*ring_seconds"):
+    with pytest.raises(ValueError, match=r"no setting called 'ringseconds'.*ring_seconds"):
         configedit.get("ringseconds")
     assert configedit.set_value("Meeting-Warn-Minutes", "5").startswith("Saved: meeting_warn_minutes = 5.")
 
@@ -171,17 +217,18 @@ def test_change_phone_notes_a_phone_that_is_not_registered(monkeypatch):
 
 
 def test_a_new_key_goes_above_the_tables_which_keep_their_entries(config_file):
-    config_file.write_text('[repo_ringtones]\nlemon-stand = 3\n"my repo" = 5\n\n[repo_voices.a]\nvoice = "x"\n'
-                           '[repo_voices.b]\nprovider = "elevenlabs"\n', encoding="utf-8")
+    config_file.write_text('[repo_ringtones]\nlemon-stand = 3\n"my repo" = 5\n\n[repo_voices]\na = "kokoro:af_bella"\n'
+                           'b = "elevenlabs"\n', encoding="utf-8")
     configedit.set_value("callerid_max", "30")
     assert saved() == {"repo_ringtones": {"lemon-stand": 3, "my repo": 5}, "callerid_max": 30,
-                       "repo_voices": {"a": {"voice": "x"}, "b": {"provider": "elevenlabs"}}}
+                       "repo_voices": {"a": "kokoro:af_bella", "b": "elevenlabs"}}
     text = config_file.read_text(encoding="utf-8")
     assert text.index("callerid_max") < text.index("[repo_ringtones]")
     assert config.load().callerid_max == 30
 
 
-@pytest.mark.parametrize("payload", ['a"\n[x]\nowner_name="evil"', '"]\n[x]\ny=1', 'say """ \\ \x1b \x7f done', "it's \\ fine"])
+@pytest.mark.parametrize("payload", ['a"\n[x]\nowner_name="evil"', '"]\n[x]\ny=1', 'say """ \\ \x1b \x7f done',
+                                     "it's \\ fine"])
 def test_text_values_cannot_add_keys_or_tables(payload):
     configedit.set_value("whisper_text", payload)
     data = saved()
@@ -244,6 +291,6 @@ def test_render_reads_back_exactly(data):
 @pytest.mark.parametrize("unwritable", ["[[things]]\nname = 1\n", "x = [{a = 1}]\n"])  # no setting is either
 def test_something_unwritable_names_the_file_and_leaves_it_alone(config_file, unwritable):
     config_file.write_text(unwritable, encoding="utf-8")
-    with pytest.raises(ValueError, match=r"config.toml holds something `phone config` can't write back.*edit it by hand"):
+    with pytest.raises(ValueError, match=r"config\.toml holds something `phone config` can't write back.*by hand"):
         configedit.set_value("callerid_max", "30")
     assert config_file.read_text(encoding="utf-8") == unwritable

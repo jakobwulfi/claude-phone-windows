@@ -14,6 +14,12 @@ def test_speech_gate(tmp_path, write_wav):
     assert stt.speech_seconds(write_wav(tmp_path / "voice.wav", 1, 800)) > 0.9  # quiet handset speech: RMS ~565
 
 
+def test_a_tenth_of_a_second_of_speech_is_enough_to_send_to_whisper(tmp_path, write_wav):
+    assert not stt.has_speech(write_wav(tmp_path / "quiet.wav", 1, 50))
+    assert not stt.has_speech(write_wav(tmp_path / "click.wav", 0.06, 800))  # three loud frames: a click
+    assert stt.has_speech(write_wav(tmp_path / "word.wav", 0.12, 800))
+
+
 def test_whisper_timeout_grows_with_the_recording(tmp_path, write_wav):
     write_wav(tmp_path / "short.wav", 2, 800)
     with wave.open(str(tmp_path / "long.wav"), "wb") as w:  # 5 minutes of silence, written in one go
@@ -47,10 +53,11 @@ def test_transcribe_waits_for_freeswitch_to_finish_the_recording(tmp_path, monke
     assert asyncio.run(scenario()) == "Green."
 
 
-def test_transcribe_gives_up_on_a_missing_recording(tmp_path, monkeypatch, controller):
+def test_a_missing_recording_is_a_failure_not_silence(tmp_path, monkeypatch, controller):
+    # None: callers say "transcription failed", and an unanswered question pushes, rather than "nothing was said".
     monkeypatch.setattr(daemon, "recording_path", lambda name: tmp_path / "gone.wav")
     monkeypatch.setattr(daemon, "RECORDING_WAIT", 0.2)
-    assert asyncio.run(controller.transcribe("gone")) == ""
+    assert asyncio.run(controller.transcribe("gone")) is None
 
 
 @pytest.mark.parametrize("whisper_said, kept", [

@@ -4,11 +4,11 @@ import asyncio
 import json
 import re
 from contextlib import asynccontextmanager
-from typing import Callable
+from collections.abc import Callable
 
 import pytest
 
-from claude_phone import daemon, esl
+from claude_phone import esl, phonebook
 
 PASSWORD = "secret"
 CHANNEL = "c-1"
@@ -189,6 +189,16 @@ def test_record_writes_16k_wav_and_reports_the_digit_that_ended_it(tmp_path):
     assert ("api uuid_setvar c-1 playback_terminators #", {}) in fs.commands
 
 
+def test_record_reports_only_a_digit_that_ends_it(tmp_path):
+    # A 5 pressed while talking doesn't end a #-terminated recording, so the recording ended some other way.
+    async def go():
+        async with fake_freeswitch(tmp_path) as (fs, client):
+            fs.hooks.append(on_execute("record", lambda h: [
+                {"Event-Name": "DTMF", "Unique-ID": CHANNEL, "DTMF-Digit": "5"}, complete(h)]))
+            return await esl.Call(client, CHANNEL).record("in-301-4", 60)
+    assert run(go()) == ("finished", None)
+
+
 def test_record_with_a_silence_limit_and_no_digit_finishes(tmp_path):
     async def go():
         async with fake_freeswitch(tmp_path) as (fs, client):
@@ -329,15 +339,15 @@ HANGUP_COMPLETE = {
 
 
 def test_call_stats_sum_up_a_leg_in_one_line_marking_what_is_missing():
-    line = daemon.call_stats(HANGUP_COMPLETE)
+    line = phonebook.call_stats(HANGUP_COMPLETE)
     assert line.startswith("audio 201 outbound 3f2a9c1e:")
     for part in ("codec=PCMU/8000", "write=PCMU", "in_pkts=1500", "in_skip=3", "in_jitter=12", "in_flaws=2",
                  "mos=4.38", "jitter_var=21.50", "out_pkts=1498", "out_skip=0"):
         assert part in line.split()
     partial = {k: v for k, v in HANGUP_COMPLETE.items() if k != "variable_rtp_audio_in_mos"}
-    assert "mos=?" in daemon.call_stats(partial).split()
+    assert "mos=?" in phonebook.call_stats(partial).split()
     one_way = {k: v for k, v in HANGUP_COMPLETE.items() if "rtp_audio_in" not in k}  # the phone sent nothing
-    assert "in_pkts=? " in daemon.call_stats(one_way) and "out_pkts=1498" in daemon.call_stats(one_way)
+    assert "in_pkts=? " in phonebook.call_stats(one_way) and "out_pkts=1498" in phonebook.call_stats(one_way)
     no_media = {k: v for k, v in HANGUP_COMPLETE.items() if "rtp_audio" not in k}
-    assert daemon.call_stats(no_media) is None
-    assert daemon.call_stats({**HANGUP_COMPLETE, "Event-Name": "CHANNEL_HANGUP"}) is None
+    assert phonebook.call_stats(no_media) is None
+    assert phonebook.call_stats({**HANGUP_COMPLETE, "Event-Name": "CHANNEL_HANGUP"}) is None

@@ -15,9 +15,21 @@ def projects_dir() -> Path:
     return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "projects"
 
 
+_found: dict[str, Path] = {}  # session id -> its transcript, while the file is there
+
+
 def find(session_id: str) -> Path | None:
-    """Session ids are UUIDs, so the file name alone identifies it, whatever project folder it's in."""
-    return next(projects_dir().glob(f"*/{session_id}.jsonl"), None)
+    """Session ids are UUIDs, so the file name alone identifies it, whatever project folder it's in. A held call
+    asks every second, so the search across project folders runs again only once the file found is gone."""
+    path = _found.get(session_id)
+    if path and path.exists():
+        return path
+    path = next(projects_dir().glob(f"*/{session_id}.jsonl"), None)
+    if path:
+        _found[session_id] = path
+    else:
+        _found.pop(session_id, None)
+    return path
 
 
 def _text(message: dict) -> str:

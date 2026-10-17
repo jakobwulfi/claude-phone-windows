@@ -6,11 +6,12 @@ import sqlite3
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 
 from . import config
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS sessions (
+_TABLES_V1 = (
+    """CREATE TABLE IF NOT EXISTS sessions (
   session_id TEXT PRIMARY KEY,
   ext        INTEGER UNIQUE NOT NULL,
   repo       TEXT NOT NULL,
@@ -21,8 +22,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   status     TEXT NOT NULL DEFAULT 'idle',
   started_at REAL NOT NULL,
   updated_at REAL NOT NULL
-);
-CREATE TABLE IF NOT EXISTS voicemails (
+)""",
+    """CREATE TABLE IF NOT EXISTS voicemails (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   session_id  TEXT NOT NULL,
   ext         INTEGER,
@@ -35,12 +36,12 @@ CREATE TABLE IF NOT EXISTS voicemails (
   answer      TEXT,
   answered_at REAL,
   delivery    TEXT                              -- sent | session-ended | failed:<why>
-);
-CREATE TABLE IF NOT EXISTS ringtones (
+)""",
+    """CREATE TABLE IF NOT EXISTS ringtones (
   repo TEXT PRIMARY KEY,
   ring INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS injections (
+)""",
+    """CREATE TABLE IF NOT EXISTS injections (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   ts         REAL NOT NULL,
   session_id TEXT,
@@ -49,18 +50,26 @@ CREATE TABLE IF NOT EXISTS injections (
   source     TEXT NOT NULL,
   text       TEXT NOT NULL,
   result     TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS prompts (
+)""",
+    """CREATE TABLE IF NOT EXISTS prompts (
   session_id TEXT PRIMARY KEY,
   text       TEXT NOT NULL,
   ts         REAL NOT NULL
-);
-"""
+)""",
+)
+# Step n takes the database from version n to n+1 (PRAGMA user_version), in one transaction. A database from before
+# versioning reads 0 but already has step 0's tables, which is why that step only creates what's missing.
+MIGRATIONS: tuple[tuple[str, ...], ...] = (
+    _TABLES_V1,
+    ("CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL)",),  # small daemon state
+)
+SCHEMA_VERSION = len(MIGRATIONS)
+_prepared: Path | None = None  # the database this process has brought up to date
 # A typed message lands in the session's prompt within moments of being logged; the hook may see it either side.
 PROMPT_MATCH_S = 30
 
 
-@dataclass
+@dataclass(frozen=True)
 class Session:
     session_id: str
     ext: int
@@ -80,7 +89,7 @@ class Session:
         return f"{self.repo}/{b}" if b else self.repo
 
 
-@dataclass
+@dataclass(frozen=True)
 class Voicemail:
     id: int
     session_id: str
@@ -96,14 +105,43 @@ class Voicemail:
     delivery: str | None
 
 
+def _version(db: sqlite3.Connection) -> int:
+    return db.execute("PRAGMA user_version").fetchone()[0]
+
+
+def _migrate(db: sqlite3.Connection) -> None:
+    if _version(db) >= SCHEMA_VERSION:
+        return  # the usual case, without taking the write lock: every hook is a process of its own
+    db.execute("PRAGMA journal_mode=WAL")  # stored in the file, like the version
+    db.execute("BEGIN IMMEDIATE")  # another process may be migrating too: the version is read again under the lock
+    try:
+        version = _version(db)
+        for step in MIGRATIONS[version:]:
+            for statement in step:
+                db.execute(statement)
+        if version < SCHEMA_VERSION:
+            db.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        db.execute("COMMIT")
+    except BaseException:
+        try:
+            db.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass  # the error that got us here is the one worth raising
+        raise
+
+
 @contextmanager
 def connect():
+    """The registry, brought up to date once per process (and again if the file was deleted meanwhile)."""
+    global _prepared
     config.HOME.mkdir(parents=True, exist_ok=True)
+    new = not config.DB_PATH.exists()
     db = sqlite3.connect(config.DB_PATH, timeout=5, isolation_level=None)
     db.row_factory = sqlite3.Row
-    db.execute("PRAGMA journal_mode=WAL")
-    db.executescript(SCHEMA)
     try:
+        if new or _prepared != config.DB_PATH:
+            _migrate(db)
+            _prepared = config.DB_PATH
         yield db
     finally:
         db.close()
@@ -138,10 +176,12 @@ def register(session_id: str, repo: str, branch: str | None, worktree: str | Non
                 db.execute("ROLLBACK")
                 raise RuntimeError("no free extensions")
         db.execute(
-            """INSERT INTO sessions (session_id, ext, repo, branch, worktree, cwd, term_id, status, started_at, updated_at)
+            """INSERT INTO sessions (session_id, ext, repo, branch, worktree, cwd, term_id, status, started_at,
+                                     updated_at)
                VALUES (?,?,?,?,?,?,?, 'idle', ?, ?)
                ON CONFLICT(session_id) DO UPDATE SET repo=excluded.repo, branch=excluded.branch,
-                 worktree=excluded.worktree, cwd=excluded.cwd, term_id=excluded.term_id, updated_at=excluded.updated_at""",
+                 worktree=excluded.worktree, cwd=excluded.cwd, term_id=excluded.term_id,
+                 updated_at=excluded.updated_at""",
             (session_id, ext, repo, branch, worktree, cwd, term_id, now, now),
         )
         db.execute("COMMIT")
@@ -188,6 +228,7 @@ def remove_missing(live_term_ids: set[str]) -> list[Session]:
     with connect() as db:
         for s in gone:
             db.execute("DELETE FROM sessions WHERE session_id=?", (s.session_id,))
+            db.execute("DELETE FROM prompts WHERE session_id=?", (s.session_id,))
     return gone
 
 
@@ -201,7 +242,8 @@ def add_voicemail(session_id: str, ext: int | None, label: str, question: str,
                   context: str | None, audio: str | None) -> int:
     with connect() as db:
         cur = db.execute(
-            "INSERT INTO voicemails (session_id, ext, label, question, context, audio, created_at) VALUES (?,?,?,?,?,?,?)",
+            "INSERT INTO voicemails (session_id, ext, label, question, context, audio, created_at) "
+            "VALUES (?,?,?,?,?,?,?)",
             (session_id, ext, label, question, context, audio, time.time()),
         )
         return cur.lastrowid
@@ -236,6 +278,21 @@ def ringtone(repo: str, choices: int = 8) -> int:
         db.execute("INSERT INTO ringtones (repo, ring) VALUES (?, ?)", (repo, ring))
         db.execute("COMMIT")
         return ring
+
+
+def get_state(key: str) -> str | None:
+    with connect() as db:
+        row = db.execute("SELECT value FROM state WHERE key=?", (key,)).fetchone()
+        return row[0] if row else None
+
+
+def set_state(key: str, value: str | None) -> None:
+    """None forgets the key."""
+    with connect() as db:
+        if value is None:
+            db.execute("DELETE FROM state WHERE key=?", (key,))
+        else:
+            db.execute("INSERT OR REPLACE INTO state (key, value) VALUES (?, ?)", (key, value))
 
 
 def record_prompt(session_id: str, text: str) -> None:

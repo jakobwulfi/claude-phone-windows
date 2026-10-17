@@ -1,7 +1,8 @@
 """Piper and Kokoro speak from a worker process of their own, started on first use and stopped when idle:
 their Python packages live outside the venv (~/.claude-phone/engines/<engine>, see voices.py), a loaded model
 holds 150-250 MB, and only ending the process gives that memory back and unlocks the files for `phone voice
-remove`. One JSON request per line on stdin, one JSON reply per line on stdout."""
+remove`. One JSON request per line on stdin, one JSON reply per line on stdout. The Windows voice uses the same
+client with a PowerShell loop (tts.WINDOWS_WORKER), so System.Speech loads once rather than for every sentence."""
 
 from __future__ import annotations
 
@@ -12,6 +13,8 @@ import sys
 import threading
 import time
 from pathlib import Path
+
+import psutil
 
 IDLE_S = 600  # a worker unused this long is stopped
 START_TIMEOUT_S = 30  # to say it's ready: Python starting, before any model loads
@@ -30,9 +33,9 @@ KOKORO_LANG = {"a": "en-us", "b": "en-gb", "e": "es", "f": "fr-fr", "h": "hi", "
 
 # Speech now renders while a call plays (a sentence at a time), on the same PC as FreeSWITCH and often the
 # softphone. onnxruntime takes every core and spins its threads between steps by default, which made the start of a
-# call stutter, like whisper's spinning OpenMP threads did. Half the physical cores, sleeping when idle: measured
-# 2026-10-16, Kokoro then renders at 0.45x real time instead of 0.36x, still well ahead of playback.
-ENGINE_THREADS = max(1, (os.cpu_count() or 2) // 4)  # logical / 4 = physical / 2 with hyperthreading
+# call stutter, like whisper's spinning OpenMP threads did. Half the physical cores, sleeping when idle: measured,
+# Kokoro then renders at 0.45x real time instead of 0.36x, still well ahead of playback.
+ENGINE_THREADS = max(1, (psutil.cpu_count(logical=False) or 2) // 2)  # with or without hyperthreading
 _calmed = False
 
 
@@ -121,11 +124,18 @@ def serve(engine: str, out=None) -> None:
 
 # --- the client, in the daemon or the `phone` command ---
 
-class Worker:
-    """One engine's worker process. Requests are serialised; a worker that died is started again."""
+class Unavailable(RuntimeError):
+    """The worker itself is down: it didn't start, died, hung or answered nonsense. Unlike an error it answered
+    with (the text or the output path was the trouble), another way of speaking may work."""
 
-    def __init__(self, engine: str, path: Path) -> None:
-        self.engine, self.path = engine, path
+
+class Worker:
+    """One engine's worker process, running command. Requests are serialised; a worker that died is started again.
+    first_timeout: how long the first request may take, model loading included (None: FIRST_RENDER_TIMEOUT_S)."""
+
+    def __init__(self, engine: str, command: list[str], env: dict[str, str] | None = None,
+                 first_timeout: float | None = None) -> None:
+        self.engine, self.command, self.env, self.first_timeout = engine, command, env or {}, first_timeout
         self.proc: subprocess.Popen | None = None
         self.answered = False  # the running worker has answered once, so its model is loaded
         self.lock = threading.Lock()
@@ -137,12 +147,11 @@ class Worker:
         return config.LOGS / f"voiceworker-{self.engine}.log"
 
     def _start(self) -> subprocess.Popen:
-        env = {**os.environ, "PYTHONPATH": str(self.path), "PYTHONIOENCODING": "utf-8"}
         self._log().parent.mkdir(parents=True, exist_ok=True)
         with open(self._log(), "a", encoding="utf-8") as log:  # the child keeps its own handle
             proc = subprocess.Popen(
-                [sys.executable, "-m", MODULE, self.engine], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=log, text=True, encoding="utf-8", env=env,
+                self.command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=log, text=True, encoding="utf-8", env={**os.environ, **self.env},
                 creationflags=subprocess.CREATE_NO_WINDOW | subprocess.BELOW_NORMAL_PRIORITY_CLASS)
         try:
             ready = json.loads(_readline(proc, START_TIMEOUT_S) or "{}").get("ready") is True
@@ -150,22 +159,22 @@ class Worker:
             ready = False
         if not ready:
             proc.kill()
-            raise RuntimeError(f"the {self.engine} engine didn't start (see {self._log()}); "
-                               "`phone voice` can install it again")
+            raise Unavailable(f"the {self.engine} engine didn't start (see {self._log()}); "
+                              "`phone voice` can install it again")
         return proc
 
     def _ask(self, req: dict) -> dict | None:
         """One request to a running worker. None: it had died (stopped by `phone voice remove`, or crashed)."""
         if self.proc is None or self.proc.poll() is not None:
             self.proc, self.answered = self._start(), False
-        timeout = RENDER_TIMEOUT_S if self.answered else FIRST_RENDER_TIMEOUT_S
+        timeout = RENDER_TIMEOUT_S if self.answered else (self.first_timeout or FIRST_RENDER_TIMEOUT_S)
         try:
             self.proc.stdin.write(json.dumps(req) + "\n")
             self.proc.stdin.flush()
             line = _readline(self.proc, timeout)
         except TimeoutError:  # before OSError, which it is a kind of
             self.proc = None  # _readline killed it
-            raise RuntimeError(f"the {self.engine} engine didn't answer in {timeout} s") from None
+            raise Unavailable(f"the {self.engine} engine didn't answer in {timeout} s") from None
         except OSError:
             line = ""
         if not line:
@@ -178,7 +187,7 @@ class Worker:
         except ValueError:
             self.proc.kill()
             self.proc = None
-            raise RuntimeError(f"the {self.engine} engine answered {line[:80]!r}") from None
+            raise Unavailable(f"the {self.engine} engine answered {line[:80]!r}") from None
 
     def render(self, **req) -> None:
         with self.lock:
@@ -186,7 +195,7 @@ class Worker:
             self.used = time.monotonic()
             self._arm()
         if reply is None:
-            raise RuntimeError(f"the {self.engine} engine stopped")
+            raise Unavailable(f"the {self.engine} engine stopped")
         if "error" in reply:
             raise RuntimeError(reply["error"])
 
@@ -229,11 +238,20 @@ _workers: dict[str, Worker] = {}
 _workers_lock = threading.Lock()
 
 
-def worker(engine: str, path: Path) -> Worker:
+def command_worker(engine: str, command: list[str], env: dict[str, str] | None = None,
+                   first_timeout: float | None = None) -> Worker:
+    """This process's worker for the engine, made with these arguments the first time it's asked for (later
+    arguments are ignored: one engine, one command)."""
     with _workers_lock:
         if engine not in _workers:
-            _workers[engine] = Worker(engine, path)
+            _workers[engine] = Worker(engine, command, env, first_timeout)
         return _workers[engine]
+
+
+def worker(engine: str, path: Path) -> Worker:
+    """This process's worker for a Python engine (Piper, Kokoro), whose packages are in path."""
+    return command_worker(engine, [sys.executable, "-m", MODULE, engine],
+                          {"PYTHONPATH": str(path), "PYTHONIOENCODING": "utf-8"})
 
 
 def is_warm(engine: str) -> bool:
@@ -254,7 +272,6 @@ def stop_here(engine: str) -> None:
 
 def stop_all(engine: str) -> None:
     """Stops this engine's workers in every process (the daemon's too), so its files can be deleted."""
-    import psutil
     stop_here(engine)
     for p in psutil.process_iter(["cmdline"]):
         cmd = p.info.get("cmdline") or []

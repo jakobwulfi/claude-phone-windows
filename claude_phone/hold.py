@@ -8,10 +8,11 @@ import re
 import struct
 from pathlib import Path
 
-from . import config
+from . import audio, config
 
 # (note, length in beats); 3 beats a bar, after a one-beat pickup.
-_VERSE = [("C5", 2), ("D5", 1), ("E5", 1.5), ("F5", .5), ("E5", 1), ("D5", 2), ("B4", 1), ("G4", 1.5), ("A4", .5), ("B4", 1)]
+_VERSE = [("C5", 2), ("D5", 1), ("E5", 1.5), ("F5", .5), ("E5", 1), ("D5", 2),
+          ("B4", 1), ("G4", 1.5), ("A4", .5), ("B4", 1)]
 _CHORUS = [("G5", 3), ("G5", 1.5), ("F#5", .5), ("E5", 1), ("D5", 2), ("B4", 1), ("G4", 1.5), ("A4", .5), ("B4", 1)]
 _HALF = [("C5", 2), ("A4", 1), ("A4", 1.5), ("G#4", .5), ("A4", 1), ("B4", 2), ("G#4", 1)]
 _HOME = [("C5", 1.5), ("B4", .5), ("A4", 1), ("G#4", 1.5), ("F#4", .5), ("G#4", 1), ("A4", 3), ("A4", 3)]
@@ -53,7 +54,6 @@ def generate(prompt: str = DEFAULT_PROMPT, seconds: int = 60) -> Path:
     import json
     import urllib.request
     from . import keychain
-    from .tts import _to_wav16
     key = keychain.elevenlabs_key()
     if not key:
         raise RuntimeError("no ElevenLabs key")
@@ -68,7 +68,7 @@ def generate(prompt: str = DEFAULT_PROMPT, seconds: int = 60) -> Path:
     src.parent.mkdir(parents=True, exist_ok=True)
     src.write_bytes(mp3)
     out = config.SOUNDS / "hold-music.wav"
-    _to_wav16(src, out)
+    audio.to_wav16(src, out)
     return out
 
 
@@ -85,16 +85,14 @@ def render() -> str:
     buf = [0.0] * int((total + 0.5) * RATE)
     t = 0.0
     for note, beats in MELODY:
-        if note != "rest":
-            _tone(buf, t, _freq(note), beats * BEAT, 0.32, 2.2)
+        _tone(buf, t, _freq(note), beats * BEAT, 0.32, 2.2)
         t += beats * BEAT
     for bar, note in enumerate(BASS):
         _tone(buf, (1 + bar * 3) * BEAT, _freq(note), 3 * BEAT, 0.22, 1.2)
     peak = max(abs(x) for x in buf) or 1.0
     frames = b"".join(struct.pack("<h", int(x / peak * 12000)) for x in buf)
-    from .tts import _write_wav
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = base.with_suffix(".tmp.wav")
-    _write_wav(tmp, frames, RATE)
+    audio.write_wav(tmp, frames, RATE)
     tmp.replace(out)
     return out.as_posix()

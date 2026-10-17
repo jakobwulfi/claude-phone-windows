@@ -1,4 +1,5 @@
-"""Claude Code hook handlers: sessions registering as they start, their status, plan mode by phone, and calling the owner."""
+"""Claude Code hook handlers: sessions registering as they start, their status, plan mode by phone, and calling the
+owner."""
 
 import io
 import json
@@ -67,3 +68,8 @@ def test_calling_or_messaging_the_owner_needs_no_approval_but_changing_settings_
     for tool in ("mcp__claude-phone__change_phone_setting", "mcp__claude-phone__transfer_call"):
         hook(monkeypatch, "pre-tool", tool_name=tool)
         assert capsys.readouterr().out == ""
+
+
+def test_a_subagent_calling_the_owner_needs_no_approval_either(monkeypatch, capsys):
+    hook(monkeypatch, "pre-tool", tool_name="mcp__claude-phone__call_sam", agent_id="reviewer-1")
+    assert json.loads(capsys.readouterr().out)["hookSpecificOutput"]["permissionDecision"] == "allow"

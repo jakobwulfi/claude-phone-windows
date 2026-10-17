@@ -1,12 +1,13 @@
 """Call flows against a scripted fake call: no FreeSWITCH, audio, whisper or VS Code."""
 
 import asyncio
+import json
 
 import pytest
 
-from claude_phone import daemon, inject, push, registry, tts
+from claude_phone import daemon, daemon_http, inject, push, registry, tts
 from claude_phone.config import Settings
-from claude_phone.daemon import browser_xml, caller_id, phonebook_xml
+from claude_phone.phonebook import browser_xml, caller_id, phonebook_xml
 from claude_phone.registry import Session
 
 
@@ -168,9 +169,10 @@ def test_a_second_caller_hears_the_line_is_busy(ctl, monkeypatch):
 
 @pytest.fixture
 def operator_voice(monkeypatch):
+    """The operator's lines as "op:<text>", rendered off the event loop: a cold cache would hold up every call."""
     async def op_async(text):
         return f"op:{text}"
-    monkeypatch.setattr(tts, "op", lambda text: f"op:{text}")
+    monkeypatch.setattr(tts, "op", lambda text: pytest.fail(f"rendered on the event loop: {text!r}"))
     monkeypatch.setattr(tts, "op_async", op_async)
 
 
@@ -196,6 +198,18 @@ def test_the_operator_asks_which_one_then_gives_up(ctl, operator_voice):
 
 # --- voicemail ---
 
+def test_holding_for_a_busy_session_renders_its_lines_off_the_event_loop(ctl, monkeypatch, operator_voice):
+    sess = registry.register("s", "repo", "main", None, "/r", "tab")
+
+    async def busy(ext):
+        return True
+    monkeypatch.setattr(ctl, "mid_task", busy)
+    monkeypatch.setattr(daemon.hold, "render", lambda: "music")
+    call = FakeCall(digits=["#"])  # the caller leaves a message now rather than hold
+    run(ctl.hold(call, sess))
+    assert call.played == [f"op:{tts.OPERATOR['hold'].format(label=ctl.spoken_name(sess))}"]
+
+
 def test_voicemail_answer_skip_delete(ctl):
     registry.register("s", "repo", "main", None, "/r", "tab")
     registry.add_voicemail("s", 301, "repo/main", "Merge it?", None, None)
@@ -204,7 +218,8 @@ def test_voicemail_answer_skip_delete(ctl):
     ctl.heard = ["Yes, merge it."]
     call = FakeCall(digits=[None, "#", "7"])  # answer the first, skip the second, delete the third
     run(ctl.voicemail(call))
-    assert ctl.typed == [(301, '[Phone answer to your earlier question] Yes, merge it. (Your question was: "Merge it?")')]
+    assert ctl.typed == [
+        (301, '[Phone answer to your earlier question] Yes, merge it. (Your question was: "Merge it?")')]
     assert [v.id for v in registry.pending_voicemails()] == [b]
 
 
@@ -310,6 +325,43 @@ def test_two_sessions_on_one_branch_are_told_apart_by_their_extension(ctl, monke
     assert alone.played[0] == "tts:site, fix login."  # no one to confuse it with
 
 
+def test_a_transfer_replies_once_connected_and_the_words_follow_after_the_hold(ctl, monkeypatch):
+    registry.register("s1", "site-fe", "main", None, "/r", "t1")
+    be = registry.register("s2", "site-be", "main", None, "/r", "t2")
+    answering(ctl, monkeypatch, FakeCall())
+    ctl.heard = ["Is the API up?"]
+
+    class Request:
+        async def json(self):
+            return {"to": "site-be", "reason": "A backend question.", "session_id": "s1", "term_id": "t1"}
+
+    async def scenario():
+        turn_over = asyncio.Event()
+
+        async def hold(call, sess):  # the target is mid-task, for longer than Claude's tool call may wait
+            await turn_over.wait()
+        monkeypatch.setattr(ctl, "hold", hold)
+        reply = await asyncio.wait_for(daemon_http.http_transfer(ctl, Request()), 2)
+        assert json.loads(reply.text) == {"status": "connecting", "to": "site-be/main", "ext": be.ext}
+        assert ctl.typed == []
+        turn_over.set()
+        await asyncio.gather(*ctl._tasks)
+    run(scenario())
+    assert ctl.typed == [(be.ext, f"[Phone transfer from site-fe/main] {ctl.s.owner} says: Is the API up?")]
+
+
+def test_a_transfer_over_before_the_reply_still_says_connecting(ctl, monkeypatch):
+    registry.register("s1", "site-fe", "main", None, "/r", "t1")
+    registry.register("s2", "site-be", "main", None, "/r", "t2")
+    answering(ctl, monkeypatch, FakeCall())  # the target is idle and the message quick
+    ctl.heard = ["Is the API up?"]
+
+    class Request:
+        async def json(self):
+            return {"to": "site-be", "reason": "Over to you.", "session_id": "s1", "term_id": "t1"}
+    assert json.loads(run(daemon_http.http_transfer(ctl, Request())).text)["status"] == "connecting"
+
+
 def test_each_live_sessions_greeting_is_ready_before_it_calls(ctl, monkeypatch):
     registry.register("s", "site", "fix-login", None, "/r", "tab")
     rendered = []
@@ -364,10 +416,29 @@ def test_hanging_up_stops_rendering_the_rest(ctl, monkeypatch):
     assert res["status"] == "delivered" and len(rendered) < 4
 
 
+def test_a_question_that_fails_midway_stops_rendering_its_speech(ctl, monkeypatch):
+    # http_call follows with a forced voicemail, which renders its own: this one would only hold up the engine.
+    registry.register("s", "repo", "main", None, "/r", "tab")
+    cancelled = []
+
+    class Speech:
+        def cancel(self):
+            cancelled.append(True)
+    monkeypatch.setattr(ctl, "speech", lambda c, text: Speech())
+
+    async def broken():
+        raise ConnectionError("event socket closed")
+    monkeypatch.setattr(ctl, "desk_online", broken)
+    with pytest.raises(ConnectionError):
+        run(ctl.call_owner({"question": "Merge it", "session_id": "s"}))
+    assert cancelled
+
+
 def test_hanging_up_on_a_question_leaves_a_voicemail_naming_the_owner_without_a_push(ctl):
     ctl.s.owner_name = "Sam"
     registry.register("s", "repo", "main", None, "/r", "tab")
-    res = run(ctl.call_owner({"question": "Merge it", "session_id": "s", "_force_voicemail": "hung up before answering"}))
+    res = run(ctl.call_owner({"question": "Merge it", "session_id": "s",
+                              "_force_voicemail": "hung up before answering"}))
     assert res["status"] == "voicemail" and ctl.pushed == []
     assert res["message"].startswith("Sam didn't answer.")
 
@@ -396,18 +467,20 @@ def test_the_meeting_whisper_speaks_with_claudes_voice_unless_set_otherwise(ctl,
         return f"tts:{text}"
     monkeypatch.setattr(tts, "render_async", render_async)
     answering(ctl, monkeypatch, FakeCall())
-    ctl.s.whisper_provider, ctl.s.whisper_voice = "", ""
+    ctl.s.whisper_voice = ""
     assert run(ctl.whisper("Meeting in two minutes.", "14:00 Board")) == "delivered"
-    ctl.s.whisper_provider, ctl.s.whisper_voice = "sapi", "Microsoft Zira Desktop"
+    ctl.s.whisper_voice = "windows:Microsoft Zira Desktop"
     run(ctl.whisper("Meeting in two minutes.", "14:00 Board"))
-    assert voices == [None, ("sapi", "Microsoft Zira Desktop")]  # None: Claude's voice, whichever it is now
+    ctl.s.whisper_voice = "kokro:bf_emma"  # no such engine: Claude's voice rather than the Windows stand-in
+    run(ctl.whisper("Meeting in two minutes.", "14:00 Board"))
+    assert voices == [None, ("windows", "Microsoft Zira Desktop"), None]  # None: Claude's voice, whichever it is
 
 
 def test_the_meeting_whisper_is_ready_before_a_meeting(ctl, monkeypatch):
     rendered = []
     monkeypatch.setattr(tts, "render", lambda text, repo=None, voice=None, fallback=True:
                         rendered.append((text, voice)))
-    ctl.s.meeting_alerts, ctl.s.whisper_text, ctl.s.whisper_provider = True, "Psst. Meeting soon.", ""
+    ctl.s.meeting_alerts, ctl.s.whisper_text, ctl.s.whisper_voice = True, "Psst. Meeting soon.", ""
     run(ctl.warm_greetings())
     assert rendered == [("Psst. Meeting soon.", None)]  # answered on the speaker at once: no ringing to hide it
     ctl.s.meeting_alerts, rendered[:] = False, []
@@ -450,6 +523,20 @@ def test_meeting_whispers_once_shows_screen_and_holds_calls(ctl, monkeypatch):
     assert run(ctl.notify_owner({"message": "Build done", "session_id": "s"}))["status"] == "on_screen"
 
 
+def test_a_past_meeting_is_forgotten_once_it_leaves_the_window(ctl, monkeypatch, keys):
+    from claude_phone import diary
+    now, m = meeting(2)
+    window = [m]
+    monkeypatch.setattr(diary, "window", lambda *a: window)
+    alerted = set()
+    run(ctl.check_meetings(now, alerted))
+    ctl.set_phone_dnd(False)  # ended early with the DND key
+    assert alerted == ctl.released == {m.key}
+    window.clear()
+    run(ctl.check_meetings(m.end, alerted))
+    assert alerted == ctl.released == set()  # a daemon running for weeks doesn't collect every meeting
+
+
 def test_meeting_already_under_way_holds_calls_without_alert(ctl, monkeypatch):
     from claude_phone import diary
     now, m = meeting(-10)
@@ -482,6 +569,114 @@ def test_dnd_key_off_ends_a_meeting_hold_and_on_holds_calls(ctl, monkeypatch):
     assert ctl.hold_reason() == "do not disturb"
     ctl.set_phone_dnd(False)
     assert ctl.hold_reason() is None
+
+
+@pytest.fixture
+def keys(ctl, monkeypatch):
+    """The desk phone's remote keys: (keys pressed, {"ok": what the next press returns}). No whisper, no screen."""
+    from claude_phone import screen
+    pressed, answer = [], {"ok": True}
+
+    async def press(key):
+        pressed.append(key)
+        return answer["ok"]
+
+    async def nothing(*a, **k):
+        return None
+    monkeypatch.setattr(screen, "press", press)
+    monkeypatch.setattr(screen, "show", nothing)
+    monkeypatch.setattr(ctl, "whisper", nothing)
+    return pressed, answer
+
+
+def test_the_dnd_switched_on_for_a_meeting_is_switched_off_after_it(ctl, monkeypatch, keys):
+    from claude_phone import diary
+    pressed, _ = keys
+    now, m = meeting(2)
+    monkeypatch.setattr(diary, "window", lambda *a: [m])
+    run(ctl.check_meetings(now, set()))
+    monkeypatch.setattr(diary, "window", lambda *a: [])
+    run(ctl.check_meetings(m.end, set()))
+    assert pressed == ["DNDOn", "DNDOff"] and not ctl.dnd_ours  # though no Action URL reported DND as on
+
+
+def test_a_phone_that_misses_the_dnd_off_key_gets_it_again_for_an_hour(ctl, monkeypatch, keys):
+    from datetime import timedelta
+    from claude_phone import diary
+    pressed, answer = keys
+    now, m = meeting(2)
+    ctl.started = now  # the daemon has been running since before the meeting
+    window = [m]
+    monkeypatch.setattr(diary, "window", lambda *a: window)
+    run(ctl.check_meetings(now, set()))
+    window.clear()
+    answer["ok"] = False  # the phone is offline
+    run(ctl.check_meetings(m.end, set()))
+    run(ctl.check_meetings(m.end + timedelta(seconds=15), set()))
+    assert pressed == ["DNDOn", "DNDOff", "DNDOff"] and ctl.dnd_ours
+    run(ctl.check_meetings(m.end + timedelta(hours=1, seconds=15), set()))
+    run(ctl.check_meetings(m.end + timedelta(hours=1, seconds=30), set()))
+    assert pressed.count("DNDOff") == 3 and not ctl.dnd_ours  # given up
+
+
+def test_a_restarted_daemon_still_switches_off_its_dnd_unless_that_was_long_ago(ctl, monkeypatch, keys):
+    from datetime import datetime, timedelta
+    from claude_phone import config, diary
+    pressed, _ = keys
+    now = datetime.now().astimezone()
+    m = diary.Meeting("e2", "Standup", now + timedelta(minutes=2), now + timedelta(minutes=17), ())
+    monkeypatch.setattr(diary, "window", lambda *a: [m])
+    run(ctl.check_meetings(now, set()))
+    restarted = daemon.Controller(config.load(), esl=None)
+    assert restarted.dnd_ours == m.end
+    monkeypatch.setattr(diary, "window", lambda *a: [])
+    run(restarted.check_meetings(m.end, set()))
+    assert pressed == ["DNDOn", "DNDOff"]
+
+    registry.set_state("dnd_ours", (now - timedelta(hours=13)).isoformat())
+    assert not daemon.Controller(config.load(), esl=None).dnd_ours  # a DND on now is more likely the owner's
+    assert registry.get_state("dnd_ours") is None
+
+
+def test_without_a_meeting_watch_a_restored_dnd_is_still_retried_until_the_phone_takes_it(ctl, monkeypatch, keys):
+    # Meeting alerts off (or no calendar link) after a restart, the PC just booted: the phone isn't reachable yet.
+    from datetime import datetime, timedelta
+    pressed, answer = keys
+    ctl.set_dnd_ours(datetime.now().astimezone() - timedelta(hours=2))  # past the hour's grace: from start-up on
+
+    async def sleep(seconds):
+        answer["ok"] = True  # online by the next try
+    monkeypatch.setattr(daemon.asyncio, "sleep", sleep)
+    answer["ok"] = False
+    run(ctl.dnd_watch())
+    assert pressed == ["DNDOff", "DNDOff"] and not ctl.dnd_ours
+
+
+def test_dnd_reported_off_while_the_key_is_being_pressed_ends_the_release_quietly(ctl, keys, monkeypatch):
+    from datetime import datetime
+    from claude_phone import screen
+
+    async def press(key):  # the phone's Action URL reports DND off before the key's reply arrives
+        ctl.set_phone_dnd(False)
+        return False
+    monkeypatch.setattr(screen, "press", press)
+    ctl.set_dnd_ours(datetime.now().astimezone())
+    run(ctl.release_dnd(datetime.now().astimezone()))
+    assert not ctl.dnd_ours
+
+
+def test_a_lan_cidr_written_with_the_pcs_own_address_still_admits_the_phone(ctl):
+    from aiohttp import web
+    ctl.s.lan_cidr = "192.168.1.50/24"  # host bits set: a strict parse refused every request
+    c = daemon.Controller(ctl.s, esl=None)
+
+    class Request:
+        remote, match_info = "192.168.1.7", {"state": "on"}
+    run(daemon_http.http_dnd(c, Request()))
+    assert c.phone_dnd
+    Request.remote = "10.0.0.9"
+    with pytest.raises(web.HTTPForbidden):
+        run(daemon_http.http_dnd(c, Request()))
 
 
 # --- FreeSWITCH's events ---
@@ -518,6 +713,56 @@ def test_only_inbound_parked_calls_are_answered_and_each_once(ctl, monkeypatch):
         await asyncio.sleep(0)
     run(scenario())
     assert answered == [("u1", "301")]
+
+
+class FakeESL:
+    """The event socket, connecting at once and then idle until cancelled."""
+    def __init__(self):
+        self.handlers, self.on_connect, self.connected = [], [], asyncio.Event()
+
+    def on_event(self, handler):
+        self.handlers.append(handler)
+
+    async def run(self):
+        self.connected.set()
+        await asyncio.Event().wait()
+
+
+@pytest.mark.parametrize("alerts, dnd_ours, watch", [(True, False, "meeting_watch"), (False, True, "dnd_watch"),
+                                                      (False, False, None)])
+def test_start_listens_prerenders_and_starts_the_watch_it_needs(monkeypatch, alerts, dnd_ours, watch):
+    began = []
+    monkeypatch.setattr(tts, "prerender", lambda: began.append("prerender"))
+
+    async def scenario():
+        esl = FakeESL()
+        c = daemon.Controller(Settings(meeting_alerts=alerts, lan_cidr="192.168.1.0/24"), esl=esl)
+        c.dnd_ours = daemon.datetime.now().astimezone() if dnd_ours else None  # our DND from before a restart
+        for name in ("sweeper", "meeting_watch", "dnd_watch"):
+            async def mark(name=name):
+                began.append(name)
+            monkeypatch.setattr(c, name, mark)
+        await c.start()
+        await asyncio.sleep(0)
+        assert esl.handlers == [c.on_event] and esl.on_connect == [c.update_mwi]
+    run(scenario())
+    assert began == ["prerender", "sweeper", *([watch] if watch else [])]
+
+
+def test_a_background_task_that_fails_is_logged_and_let_go(ctl, caplog):
+    async def boom():
+        raise RuntimeError("the screen is unplugged")
+
+    async def scenario():
+        failed, stopped = ctl.spawn(boom(), "screen push"), ctl.spawn(asyncio.sleep(60), "sweeper")
+        assert ctl._tasks == {failed, stopped}  # held: the loop keeps only a weak reference
+        stopped.cancel()
+        await asyncio.gather(failed, stopped, return_exceptions=True)
+        await asyncio.sleep(0)
+    run(scenario())
+    assert ctl._tasks == set()
+    assert "screen push failed" in caplog.text and "the screen is unplugged" in caplog.text
+    assert "sweeper" not in caplog.text  # cancelling isn't failing
 
 
 @pytest.mark.parametrize("windows_answer", [True, False])
@@ -588,6 +833,30 @@ def test_call_summary_on_screen_prefers_the_sessions_summary(ctl, monkeypatch):
     run(ctl.show_on_screen(body, "Shall I merge the payments pull request now?", {"status": "voicemail"}))
     run(ctl.show_on_screen({"_label": "repo/main"}, "x" * 100, {"status": "delivered"}))
     assert shown == [("repo/main", "Merge the payments PR?\n(voicemail waiting)"), ("repo/main", "x" * 77 + "...")]
+
+
+def test_the_desk_phones_address_is_looked_up_off_the_event_loop(monkeypatch):
+    # It can need a FreeSWITCH query, and the keychain read is slow too: neither may stall a call's audio.
+    import threading
+    from claude_phone import screen
+    threads = []
+    monkeypatch.setattr(screen, "desk_ip", lambda s: threads.append(threading.current_thread()))
+    monkeypatch.setattr(screen.config, "load", lambda: Settings(screen_push=True))
+    monkeypatch.setenv("CLAUDE_PHONE_DESK_ADMIN", "pw")  # not the real keychain
+    run(screen.show("Title", "text"))
+    run(screen.press("DNDOn"))
+    assert len(threads) == 2 and threading.main_thread() not in threads
+
+
+def test_who_is_calling_is_worked_out_off_the_event_loop(ctl, monkeypatch):
+    import threading  # it runs git, and may register the session
+    threads, real_caller = [], ctl.caller
+    monkeypatch.setattr(ctl, "caller", lambda body: threads.append(threading.current_thread()) or real_caller(body))
+    answering(ctl, monkeypatch, None, "not answered")
+    run(ctl.notify_owner({"message": "Hi", "session_id": "s"}))
+    run(ctl.call_owner({"question": "Ship it", "session_id": "s"}))
+    run(ctl.transfer({"to": "nobody", "session_id": "s"}))
+    assert len(threads) == 3 and threading.main_thread() not in threads
 
 
 def test_the_screen_text_is_escaped():

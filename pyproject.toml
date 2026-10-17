@@ -7,7 +7,7 @@ requires-python = ">=3.12"
 dependencies = ["aiohttp>=3.9", "mcp>=2.3,<3", "psutil>=5.9", "keyring>=25"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "pytest-cov>=5", "ruff>=0.6"]
 # Meeting alerts from Google/Outlook calendar feeds. ~1.5 MB, pure Python; loaded only when a feed is read.
 calendar = ["icalendar>=7", "recurring-ical-events>=3.8", "tzdata"]
 
@@ -23,3 +23,22 @@ packages = ["claude_phone"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# `ruff check` only: the code keeps its own layout, so no `ruff format`.
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP", "SIM", "RUF"]
+ignore = [
+    "E731",    # lambda assignments, used on purpose (tts.spoken_label)
+    "SIM105",  # try/except/pass reads as plainly as contextlib.suppress
+    "SIM117",  # nested with: a session, then a request on it
+    "SIM905",  # "A2 C3 ...".split() keeps a list of notes readable
+    "RUF005",  # list + list reads as the melody's sections in order
+]
+
+[tool.ruff.lint.per-file-ignores]
+# The fixtures hand back a tuple that every test unpacks the same way, using what it needs.
+"tests/*" = ["RUF059"]

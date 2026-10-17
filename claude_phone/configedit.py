@@ -12,7 +12,9 @@ import tempfile
 import time
 import tomllib
 from dataclasses import dataclass, fields
-from typing import Any, Callable
+from pathlib import Path
+from typing import Any
+from collections.abc import Callable
 
 from . import config, keychain
 
@@ -35,7 +37,8 @@ REPLACE_TRIES, REPLACE_WAIT_S = 5, 0.05  # Windows refuses to replace a file ano
 
 @dataclass(frozen=True)
 class Spec:
-    help: str
+    """What a setting may be. What it's for is config.DESCRIPTIONS[key]."""
+    allowed: str  # the values it takes, e.g. "1-30 minutes"
     parse: Callable[[str], Any]  # raw text -> value; raises ValueError with a message for the user
     applies: str  # a key of APPLIES
 
@@ -75,10 +78,9 @@ def _bool(raw: str) -> bool:
 
 
 def _sources(raw: str) -> list[str]:
-    from .diary import SOURCES
     chosen = list(dict.fromkeys(raw.replace(",", " ").lower().split()))
-    if not chosen or any(x not in SOURCES for x in chosen):
-        raise ValueError(f"expected {' or '.join(SOURCES)}, or both separated by a comma")
+    if not chosen or any(x not in config.CALENDAR_SOURCES for x in chosen):
+        raise ValueError(f"expected {' or '.join(config.CALENDAR_SOURCES)}, or both separated by a comma")
     return chosen
 
 
@@ -95,21 +97,22 @@ def _ring_seconds(raw: str) -> int:
 
 
 SPECS: dict[str, Spec] = {
-    "calendar_sources": Spec("which calendar feeds the meeting alerts read: google, outlook or both", _sources,
-                             "live"),
-    "meeting_alerts": Spec("warn before meetings and hold Claude's calls during them: on or off", _bool, "daemon"),
-    "meeting_warn_minutes": Spec("how many minutes before a meeting to warn, 1-30", _int(1, 30, " minutes"),
-                                 "daemon"),
-    "callerid_max": Spec("the longest caller ID (repo/branch) shown on the phone, 10-40 characters", _int(10, 40),
-                         "daemon"),
-    "owner_name": Spec("your name, as spoken on calls and used in the tool names (call_<name>)",
+    "calendar_sources": Spec("google, outlook, or both separated by a comma", _sources, "live"),
+    "meeting_alerts": Spec("on or off", _bool, "daemon"),
+    "meeting_warn_minutes": Spec("1-30 minutes", _int(1, 30, " minutes"), "daemon"),
+    "callerid_max": Spec("10-40 characters", _int(10, 40), "daemon"),
+    "owner_name": Spec("up to 40 letters, digits, spaces, dots, apostrophes and dashes",
                        _text(40, _NAME, "letters, digits, spaces, dots, apostrophes and dashes"), "sessions"),
-    "ring_seconds": Spec("how long Claude's calls ring before going to voicemail, 10-40 seconds and at most 90 "
-                         "minus record_seconds (so 30 by default)", _ring_seconds, "daemon"),
-    "whisper_text": Spec("what the meeting whisper says, up to 120 characters", _text(120), "daemon"),
-    "autostart": Spec("start claude-phone when VS Code opens (off: only with `phone up` or /claude-phone): on or off",
-                      _bool, "vscode"),
+    "ring_seconds": Spec(f"10-40 seconds, at most {RING_PLUS_RECORD_MAX} minus record_seconds", _ring_seconds,
+                         "daemon"),
+    "whisper_text": Spec("up to 120 characters", _text(120), "daemon"),
+    "autostart": Spec("on or off", _bool, "vscode"),
 }
+
+
+def described(key: str) -> str:
+    """What a setting is for and what it may be."""
+    return f"{config.DESCRIPTIONS[key]} ({SPECS[key].allowed})"
 
 
 def _key(key: str) -> str:
@@ -148,12 +151,9 @@ def _file_keys() -> set[str]:
 
 def show() -> str:
     s, ours = config.load(), _file_keys()
-    lines = [f"{key} = {_show(getattr(s, key))}  ({'set' if key in ours else 'default'}): {spec.help}"
-             for key, spec in SPECS.items()]
-    unknown = config.unknown_keys()
-    if unknown:
-        lines.append(f"Not recognised in {config.CONFIG_FILE.name}, so ignored (a typo?): {', '.join(unknown)}")
-    return "\n".join(lines)
+    lines = [f"{key} = {_show(getattr(s, key))}  ({'set' if key in ours else 'default'}): {described(key)}"
+             for key in SPECS]
+    return "\n".join(lines + config.problems())
 
 
 def get(key: str) -> str:
@@ -161,14 +161,14 @@ def get(key: str) -> str:
     spec = SPECS[key]
     where = (f"set in config.toml; the default is {_show(_default(key))}" if key in _file_keys()
              else "the default")
-    return f"{key} = {_show(getattr(config.load(), key))} ({where}): {spec.help}. {APPLIES[spec.applies]}"
+    return f"{key} = {_show(getattr(config.load(), key))} ({where}): {described(key)}. {APPLIES[spec.applies]}"
 
 
 def set_value(key: str, raw: str) -> str:
     key = _key(key)
     spec = SPECS[key]
     value = spec.parse(raw)
-    _write(key, value)
+    write_setting(key, value)
     if key == "autostart" and value:
         config.remember_phone_exe()
     return f"Saved: {key} = {_quoted(value)}. {APPLIES[spec.applies]}" + _warnings(key, value)
@@ -176,7 +176,7 @@ def set_value(key: str, raw: str) -> str:
 
 def unset(key: str) -> str:
     key = _key(key)
-    _write(key, None)
+    write_setting(key, None)
     return f"Removed {key}, so it's back to the default ({_quoted(_default(key))}). {APPLIES[SPECS[key].applies]}"
 
 
@@ -199,25 +199,45 @@ def _linked(source: str) -> bool:
         return False
 
 
-def _write(key: str, value: Any) -> None:
+def write_setting(key: str, value: Any) -> None:
     """Sets one top-level key (None removes it) and writes config.toml again, each line with a comment saying
     what the setting is for. The result is read back and checked before it replaces the file."""
-    path = config.CONFIG_FILE
-    old = path.read_bytes().decode("utf-8") if path.exists() else ""
-    data = tomllib.loads(old)
+    path, old, data = _current()
     if isinstance(data.get(key), dict):
         raise ValueError(f"{key} is a [table] in {path}; fix that by hand")
     if value is None:
         data.pop(key, None)
     else:
         data[key] = value
+    _save(path, old, data, key)
+
+
+def migrate() -> str:
+    """`phone config migrate`: the old voice settings in config.toml rewritten in the new form, now."""
+    path, old, data = _current()
+    if not (found := config.legacy(tomllib.loads(old))):
+        return f"{path.name} has no old voice settings: nothing to rewrite."
+    _save(path, old, data, "the voice settings")
+    return f"Rewrote {', '.join(found)} in the new form; Claude's voices are the same as before."
+
+
+def _current() -> tuple[Path, str, dict]:
+    """config.toml: its path, its text, and its settings with any old voice settings in the new form."""
+    path = config.CONFIG_FILE
+    old = path.read_bytes().decode("utf-8") if path.exists() else ""
+    data = tomllib.loads(old)
+    return path, old, config.migrate_legacy(data) if config.legacy(data) else data
+
+
+def _save(path: Path, old: str, data: dict, what: str) -> None:
+    """data written as config.toml, in old's line endings; checked by reading it back before it replaces the file."""
     try:
         new = render(data, "\r\n" if "\r\n" in old else "\n")
     except ValueError as e:
         raise ValueError(f"{path.name} holds something `phone config` can't write back ({e}); "
                          "edit it by hand") from None
     if tomllib.loads(new) != data:
-        raise ValueError(f"couldn't write {key} to {path} safely; set it there by hand")
+        raise ValueError(f"couldn't write {what} to {path} safely; set it there by hand")
     _replace(path, new.encode("utf-8"))
 
 
@@ -300,7 +320,7 @@ def _registered(ext: str) -> str:
     from . import esl
     s = config.load()
     try:
-        contact = esl.api_sync(f"sofia_contact internal/{ext}@{s.lan_ip}", s.esl_port, keychain.get_or_create("esl"))
+        contact = esl.api_local(f"sofia_contact internal/{ext}@{s.lan_ip}")
     except Exception:  # FreeSWITCH down, or the password store failing: the setting is saved either way
         return "not checkable right now (is FreeSWITCH running?)"
     return "not registered" if contact.strip().startswith("error/") else "registered"
@@ -325,7 +345,7 @@ def change_phone(phone: str | None = None) -> str:
     ext = getattr(s, PHONES[choice])
     if ext == s.ring_ext:
         return f"Claude's calls already ring {_phone_name(s, ext)}."
-    _write("ring_ext", ext)
+    write_setting("ring_ext", ext)
     state = _registered(ext)
     note = "" if state == "registered" else f" Note: that phone is {state} right now."
     return f"Saved: Claude's calls will ring {_phone_name(s, ext)}. {APPLIES['daemon']}{note}"

@@ -10,7 +10,7 @@ import tomllib
 
 import pytest
 
-from claude_phone import cli, config, keychain, mcp_server, tts, voices, voiceworker
+from claude_phone import cli, config, keychain, mcp_server, procs, tts, voices, voiceworker
 
 REAL_DOWNLOAD = voices._download  # the fixture fakes these; their own tests need the real ones
 REAL_PRERENDER_ELSEWHERE = mcp_server._prerender_elsewhere
@@ -33,7 +33,7 @@ def home(monkeypatch):
     cat = config.VOICES / "piper" / "voices.json"
     cat.parent.mkdir(parents=True)
     cat.write_text(json.dumps(CATALOGUE), encoding="utf-8")
-    monkeypatch.setattr(tts, "sapi_voices", lambda: WINDOWS)
+    monkeypatch.setattr(tts, "windows_voice_lines", lambda: WINDOWS)
     monkeypatch.setattr(tts, "prerender", lambda: 0)
     keys: dict[str, str] = {}
     monkeypatch.setattr(keychain, "elevenlabs_key", lambda: keys.get("elevenlabs"))
@@ -111,7 +111,7 @@ def test_a_voice_on_this_pc_is_switched_to_without_asking():
     msg = voices.choose("windows:Microsoft Mark", ask=lambda q: asked.append(q) or False)
     assert msg.startswith("Claude now speaks with the Windows voice Microsoft Mark")
     assert saved_voice() == "windows:Microsoft Mark" and asked == [] and downloads == []
-    assert tts.claude_voice() == ("sapi", "Microsoft Mark")
+    assert tts.claude_voice() == ("windows", "Microsoft Mark")
 
 
 def test_a_download_needs_a_yes_and_says_how_big_it_is():
@@ -144,7 +144,7 @@ def test_a_voice_that_doesnt_speak_is_not_switched_to(monkeypatch):
     def broken(text, voice, out):
         raise RuntimeError("the piper engine didn't start")
     monkeypatch.setattr(tts.PROVIDERS["piper"], "render", broken)
-    with pytest.raises(ValueError, match="didn't work .the piper engine didn't start.; Claude still speaks with"):
+    with pytest.raises(ValueError, match=r"didn't work \(the piper engine didn't start\); Claude still speaks with"):
         voices.choose("piper:en_US-ryan-medium", download=True)
     assert saved_voice() == ""
     with pytest.raises(ValueError, match="didn't work"):
@@ -195,14 +195,14 @@ def test_a_refused_key_is_not_stored(home, monkeypatch):
     assert home == {}
 
 
-def test_the_old_settings_choose_until_phone_voice_is_used_and_a_repo_voice_still_wins():
+def test_the_old_settings_still_choose_the_voice_and_a_repo_voice_still_wins():
     config.CONFIG_FILE.write_text('tts_provider = "sapi"\nsapi_voice = "Microsoft Zira Desktop"\n', encoding="utf-8")
-    assert tts.claude_voice() == ("sapi", None)
+    assert tts.claude_voice() == ("windows", "Microsoft Zira Desktop")  # "sapi", as config.toml used to say
     assert voices.current() == voices.Voice("windows", "Microsoft Zira Desktop")
-    config.CONFIG_FILE.write_text('voice = "windows:Microsoft Mark"\n[repo_voices.site]\nprovider = "piper"\n'
-                                  'voice = "en_US-amy-low"\n', encoding="utf-8")
+    config.CONFIG_FILE.write_text('voice = "windows:Microsoft Mark"\n[repo_voices]\nsite = "piper:en_US-amy-low"\n'
+                                  'odd = "espeak:x"\n', encoding="utf-8")
     assert tts.voice_for("site") == ("piper", "en_US-amy-low")
-    assert tts.voice_for("other") == ("sapi", "Microsoft Mark")
+    assert tts.voice_for("other") == tts.voice_for("odd") == ("windows", "Microsoft Mark")  # no espeak engine
 
 
 # --- deleting ---
@@ -218,11 +218,12 @@ def test_deleting_the_voice_in_use_switches_to_the_windows_voice_first():
     voices.choose("piper:en_US-amy-low", download=True)
     msg = voices.remove("piper:en_US-amy-low")
     assert msg.startswith("Claude now speaks with the Windows default voice. Deleted the Piper voice en_US-amy-low")
-    assert saved_voice() == "windows" and tts.claude_voice() == ("sapi", None)
+    assert saved_voice() == "windows" and tts.claude_voice() == ("windows", None)
     assert voices.piper_installed() == ["en_US-ryan-medium"] and voices.engine_installed("piper")
+    # An old sapi_voice was the voice until `phone voice` chose another; back on Windows, it's the default voice.
     config.CONFIG_FILE.write_text('sapi_voice = "Microsoft Zira Desktop"\n', encoding="utf-8")
     voices.choose("kokoro:af_sky", download=True)
-    assert voices.remove("kokoro").startswith("Claude now speaks with the Windows voice Microsoft Zira Desktop. ")
+    assert voices.remove("kokoro").startswith("Claude now speaks with the Windows default voice. ")
 
 
 def test_the_last_piper_voice_takes_the_engine_with_it():
@@ -274,8 +275,8 @@ def test_repos_whose_voice_was_deleted_are_named():
 
 def test_a_failing_engine_falls_back_to_windows_and_is_tried_again_next_time(monkeypatch):
     rendered = []
-    monkeypatch.setattr(tts.PROVIDERS["sapi"], "render",
-                        lambda t, v, out: (rendered.append("sapi"), out.write_bytes(b"s")))
+    monkeypatch.setattr(tts.PROVIDERS["windows"], "render",
+                        lambda t, v, out: (rendered.append("windows"), out.write_bytes(b"s")))
 
     def broken(text, voice, out):
         rendered.append("piper")
@@ -285,7 +286,7 @@ def test_a_failing_engine_falls_back_to_windows_and_is_tried_again_next_time(mon
     monkeypatch.setattr(tts.PROVIDERS["piper"], "render",
                         lambda t, v, out: (rendered.append("piper"), out.write_bytes(b"p")))
     second = tts.render("Fall back please.", voice=("piper", "en_US-ryan-medium"))
-    assert rendered == ["piper", "sapi", "piper"] and first != second
+    assert rendered == ["piper", "windows", "piper"] and first != second
 
 
 # --- the command line and Claude's tool ---
@@ -366,17 +367,17 @@ def test_a_new_prerender_replaces_the_one_still_running(monkeypatch, tmp_path):
         def __init__(self, argv, **kw):
             started.append(argv)
             self.pid = 4242
-    monkeypatch.setattr(cli, "RUN", tmp_path)
-    monkeypatch.setattr(cli, "_pid", lambda name: 999 if name == "prerender" else None)
-    monkeypatch.setattr(cli.psutil, "Process", Old)
-    monkeypatch.setattr(mcp_server.subprocess, "Popen", New)
+    monkeypatch.setattr(procs, "RUN", tmp_path)
+    monkeypatch.setattr(procs, "pid", lambda name: 999 if name == "prerender" else None)
+    monkeypatch.setattr(procs.psutil, "Process", Old)
+    monkeypatch.setattr(procs.subprocess, "Popen", New)
     REAL_PRERENDER_ELSEWHERE()
     assert killed == [999] and started[0][-1] == "prerender"
     assert (tmp_path / "prerender.pid").read_text() == "4242"
 
     def cant(argv, **kw):
         raise OSError("no such file")
-    monkeypatch.setattr(mcp_server.subprocess, "Popen", cant)
+    monkeypatch.setattr(procs.subprocess, "Popen", cant)
     REAL_PRERENDER_ELSEWHERE()  # one that won't start is logged, not raised: the switch stands
 
 
@@ -395,6 +396,67 @@ def test_the_worker_answers_each_request_on_its_own_line(monkeypatch):
     assert replies[2]["error"].startswith("ZeroDivisionError") and seen == ["hi"]
 
 
+ECHO = ("import json, sys\nprint(json.dumps({'ready': True}), flush=True)\n"
+        "for line in sys.stdin:\n    print(json.dumps({'ok': True, 'heard': json.loads(line)['text']}), flush=True)\n")
+
+
+def test_a_worker_runs_whatever_command_speaks_the_protocol(monkeypatch):
+    monkeypatch.setattr(voiceworker, "_workers", {})
+    w = voiceworker.command_worker("echo", [sys.executable, "-c", ECHO])
+    try:
+        w.render(text="one")
+        w.render(text="two")
+        assert voiceworker.command_worker("echo", ["ignored"]) is w and voiceworker.is_warm("echo")
+    finally:
+        voiceworker.stop_here("echo")
+    assert w.proc is None
+
+
+class Answers:
+    """A worker process that answers each request with the next of replies."""
+    def __init__(self, *replies):
+        self.stdin, self.stdout, self.replies = io.StringIO(), self, list(replies)
+
+    def readline(self):
+        return self.replies.pop(0)
+
+    def poll(self):
+        return None
+
+    def kill(self):
+        pass
+
+
+def test_an_engine_that_answers_with_an_error_is_not_unavailable(monkeypatch):
+    # The caller falls back to another voice only when the worker itself is down, not when the text failed.
+    w = voiceworker.Worker("windows", [])
+    monkeypatch.setattr(w, "_start", lambda: Answers('{"error": "IOException: bad path"}\n', "not json\n"))
+    monkeypatch.setattr(w, "_arm", lambda: None)
+    with pytest.raises(RuntimeError, match="bad path") as failed:
+        w.render(text="hello")
+    assert not isinstance(failed.value, voiceworker.Unavailable)
+    with pytest.raises(voiceworker.Unavailable, match="answered 'not json"):
+        w.render(text="hello")
+
+
+def test_a_worker_can_wait_less_for_its_first_answer(monkeypatch):
+    waited = []
+    monkeypatch.setattr(voiceworker, "_readline", lambda proc, timeout: waited.append(timeout) or '{"ok": true}\n')
+    w = voiceworker.Worker("windows", [], first_timeout=20)
+    monkeypatch.setattr(w, "_start", Answers)
+    monkeypatch.setattr(w, "_arm", lambda: None)
+    w.render(text="first")
+    w.render(text="second")
+    assert waited == [20, voiceworker.RENDER_TIMEOUT_S]
+
+
+def test_a_python_engines_worker_finds_its_packages(monkeypatch):
+    monkeypatch.setattr(voiceworker, "_workers", {})
+    w = voiceworker.worker("piper", config.ENGINES / "piper")
+    assert w.command == [sys.executable, "-m", voiceworker.MODULE, "piper"]
+    assert w.env["PYTHONPATH"] == str(config.ENGINES / "piper")
+
+
 def test_a_worker_that_died_is_started_again(monkeypatch):
     class Proc:
         def __init__(self, replies):
@@ -408,7 +470,7 @@ def test_a_worker_that_died_is_started_again(monkeypatch):
             return None
 
     procs = [Proc([""]), Proc(['{"ok": true}\n'])]  # the first dies mid-request
-    w = voiceworker.Worker("piper", config.ENGINES / "piper")
+    w = voiceworker.Worker("piper", [])
     monkeypatch.setattr(w, "_start", lambda: procs.pop(0))
     monkeypatch.setattr(w, "_arm", lambda: None)
     w.render(text="hello")
@@ -438,10 +500,10 @@ def test_a_hung_worker_is_killed_so_the_call_falls_back(monkeypatch):
             hang.set()
 
     monkeypatch.setattr(voiceworker, "FIRST_RENDER_TIMEOUT_S", 0.2)
-    w = voiceworker.Worker("piper", config.ENGINES / "piper")
+    w = voiceworker.Worker("piper", [])
     monkeypatch.setattr(w, "_start", Proc)
     monkeypatch.setattr(w, "_arm", lambda: None)
-    with pytest.raises(RuntimeError, match="didn't answer"):
+    with pytest.raises(voiceworker.Unavailable, match="didn't answer"):
         w.render(text="hello")
     assert Proc.killed and w.proc is None
 
@@ -471,7 +533,7 @@ def test_a_dropped_download_says_so(monkeypatch):
         def read(self, n=-1):
             raise http.client.IncompleteRead(b"")
     monkeypatch.setattr(voices.urllib.request, "urlopen", lambda url, timeout: Dropped())
-    with pytest.raises(ValueError, match="couldn't download x.onnx"):
+    with pytest.raises(ValueError, match=r"couldn't download x\.onnx"):
         REAL_DOWNLOAD("https://example/x.onnx", config.VOICES / "piper" / "x.onnx", 10, "0", "md5", lambda s: None)
 
 
@@ -496,7 +558,7 @@ def test_a_worker_waits_longer_only_while_its_model_loads_and_is_warm_once_it_ha
         waited.append(timeout)
         return '{"ok": true}\n'
     monkeypatch.setattr(voiceworker, "_readline", readline)
-    w = voiceworker.Worker("piper", config.ENGINES / "piper")
+    w = voiceworker.Worker("piper", [])
     monkeypatch.setattr(w, "_start", Proc)
     monkeypatch.setattr(w, "_arm", lambda: None)
     monkeypatch.setattr(voiceworker, "_workers", {"piper": w})
