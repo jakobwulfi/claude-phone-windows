@@ -10,13 +10,14 @@ $python = Join-Path $repo '.venv\Scripts\python.exe'
 if (-not (Test-Path $python)) { throw "No virtualenv at $python. Set up claude-phone first (README)." }
 
 # The ports come from claude-phone's own config, so they can't drift from what FreeSWITCH and the daemon use.
-$settings = & $python -c @'
+# The code goes in on stdin: Windows PowerShell 5.1 strips the double quotes from a native command's arguments.
+$settings = @'
 import json
 from claude_phone import cli, config
 s = config.load()
 print(json.dumps({"sip": s.sip_port, "rtp": f"{cli.RTP_START}-{cli.RTP_END}", "phonebook": s.phonebook_port,
                   "freeswitch": s.freeswitch_exe}))
-'@ | ConvertFrom-Json
+'@ | & $python - | ConvertFrom-Json
 
 Get-NetFirewallRule -DisplayName 'claude-phone *' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
 

@@ -59,6 +59,16 @@ def test_plan_mode_asked_for_by_phone_needs_no_approval_but_typed_at_the_keyboar
     assert capsys.readouterr().out == ""
 
 
+def test_a_payload_is_read_as_utf8_whatever_the_windows_code_page(monkeypatch, capsys):
+    s = registry.register("s", "repo", "main", None, "/r", "vscode:1")
+    registry.log_injection(s, "dial-in", "Café ✅, enter plan mode.", "sent")
+    raw = json.dumps({"session_id": "s", "prompt": "Café ✅, enter plan mode."}, ensure_ascii=False).encode()
+    monkeypatch.setattr("sys.stdin", io.TextIOWrapper(io.BytesIO(raw), encoding="cp932", errors="surrogateescape"))
+    hooks.run("prompt")
+    hook(monkeypatch, "pre-tool", tool_name="EnterPlanMode")
+    assert json.loads(capsys.readouterr().out)["hookSpecificOutput"]["permissionDecision"] == "allow"
+
+
 def test_calling_or_messaging_the_owner_needs_no_approval_but_changing_settings_does(monkeypatch, capsys):
     registry.register("s", "repo", "main", None, "/r", "vscode:1")
     hook(monkeypatch, "prompt", prompt="Enter plan mode and call me back.")  # typed at the keyboard

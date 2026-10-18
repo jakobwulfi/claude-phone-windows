@@ -57,10 +57,17 @@ def pre_tool(sid: str, payload: dict) -> None:
         _allow("asked for by phone")
 
 
+def _read_payload() -> dict:
+    """Claude Code writes UTF-8; sys.stdin would decode with the Windows code page and garble anything non-ASCII."""
+    buf = getattr(sys.stdin, "buffer", None)
+    text = buf.read().decode("utf-8", "replace") if buf else sys.stdin.read()
+    return json.loads(text or "{}")
+
+
 def run(event: str) -> int:
     lg = log.get("hook")
     try:
-        payload = json.loads(sys.stdin.read() or "{}")
+        payload = _read_payload()
         sid = payload.get("session_id") or os.environ.get("CLAUDE_CODE_SESSION_ID")
         if not sid:
             return 0
