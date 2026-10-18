@@ -11,7 +11,7 @@ os.environ["CLAUDE_CONFIG_DIR"] = tempfile.mkdtemp(prefix="cphone-test-claude-")
 
 import pytest
 
-from claude_phone import config, configedit, daemon
+from claude_phone import config, configedit, daemon, esl
 
 
 @pytest.fixture(autouse=True)
@@ -19,6 +19,17 @@ def fresh_db():
     config.HOME.mkdir(parents=True, exist_ok=True)
     config.DB_PATH.unlink(missing_ok=True)
     yield
+
+
+@pytest.fixture(autouse=True)
+def no_live_services(monkeypatch):
+    """The real daemon and FreeSWITCH listen on the default ports: a test that reached them would shut down the
+    daemon, ring the phone or hang up calls. A test that needs them patches them itself."""
+    monkeypatch.setattr(config.Settings, "daemon_url", property(lambda self: "http://127.0.0.1:9"))  # nothing listens
+
+    def refused(*args, **kwargs):
+        raise ConnectionRefusedError("tests never reach the live FreeSWITCH")
+    monkeypatch.setattr(esl, "api_sync", refused)
 
 
 @pytest.fixture(autouse=True)

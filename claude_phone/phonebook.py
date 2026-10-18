@@ -7,7 +7,7 @@ from . import config, registry
 
 
 def ringtone(repo: str, overrides: dict) -> int:
-    """T31P ringtone 1-8 for a repo: config override, else the one the registry assigned it."""
+    """T31P ringtone 1-5 for a repo: config override, else the one the registry assigned it."""
     if repo in overrides:
         return int(overrides[repo])
     return registry.ringtone(repo)

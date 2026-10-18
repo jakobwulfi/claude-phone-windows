@@ -79,7 +79,26 @@ def _spawn(name: str, svc: Service, s: config.Settings) -> None:
 def _stop(name: str) -> None:
     if name == "daemon" and procs.pid(name):
         _ask_daemon_to_stop()
+    if name == "freeswitch" and procs.pid(name):
+        _ask_freeswitch_to_hang_up()
     print(f"{name}: {'stopped' if procs.stop(name) else 'not running'}")
+
+
+# How long FreeSWITCH gets to send its hang-ups before it's ended.
+HANGUP_WAIT_S = 2
+
+
+def _ask_freeswitch_to_hang_up() -> None:
+    """Ended from outside (TerminateProcess on Windows), FreeSWITCH sends no hang-up, so a call the daemon doesn't run,
+    like the echo test, stays open on the phone as a silent line. One that doesn't answer is ended anyway."""
+    from . import esl
+    try:
+        esl.api_local("hupall NORMAL_CLEARING")
+        deadline = time.monotonic() + HANGUP_WAIT_S
+        while not esl.api_local("show channels count").startswith("0 total") and time.monotonic() < deadline:
+            time.sleep(0.1)
+    except (OSError, esl.ESLError):
+        pass
 
 
 def _ask_daemon_to_stop() -> None:

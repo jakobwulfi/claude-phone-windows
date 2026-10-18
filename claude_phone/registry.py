@@ -265,17 +265,22 @@ def delete_voicemail(vm_id: int) -> None:
         db.execute("UPDATE voicemails SET state='deleted', answered_at=? WHERE id=?", (time.time(), vm_id))
 
 
-def ringtone(repo: str, choices: int = 8) -> int:
-    """A repo's ringtone (1..choices). First sight assigns the least-used one, then it never changes."""
+RINGTONES = 5  # the T31P plays Ring1-4 and Splash (docs/t31p-setup.md step 14)
+
+
+def ringtone(repo: str, choices: int = RINGTONES) -> int:
+    """A repo's ringtone (1..choices). First sight assigns the least-used one, then it never changes, unless it's
+    out of range (assigned when more rings were handed out)."""
     with connect() as db:
         db.execute("BEGIN IMMEDIATE")
         row = db.execute("SELECT ring FROM ringtones WHERE repo=?", (repo,)).fetchone()
-        if row:
+        if row and row[0] <= choices:
             db.execute("COMMIT")
             return row[0]
-        used = dict(db.execute("SELECT ring, COUNT(*) FROM ringtones GROUP BY ring").fetchall())
+        used = dict(db.execute("SELECT ring, COUNT(*) FROM ringtones WHERE repo != ? GROUP BY ring",
+                               (repo,)).fetchall())
         ring = min(range(1, choices + 1), key=lambda r: (used.get(r, 0), r))
-        db.execute("INSERT INTO ringtones (repo, ring) VALUES (?, ?)", (repo, ring))
+        db.execute("INSERT OR REPLACE INTO ringtones (repo, ring) VALUES (?, ?)", (repo, ring))
         db.execute("COMMIT")
         return ring
 

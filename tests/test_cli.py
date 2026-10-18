@@ -12,7 +12,7 @@ from typing import ClassVar
 
 import pytest
 
-from claude_phone import cli, config, procs
+from claude_phone import cli, config, esl, procs
 
 
 class FakePopen:
@@ -176,6 +176,32 @@ def test_a_daemon_that_doesnt_answer_is_stopped_anyway(monkeypatch):
     assert stopped == ["daemon"]
 
 
+def test_stopping_freeswitch_hangs_up_its_calls_first(monkeypatch):
+    sent, stopped = [], []
+    counts = iter(["1 total.", "0 total."])  # the echo test's channel, gone once its hang-up is out
+
+    def api(cmd):
+        sent.append(cmd)
+        return next(counts) if cmd == "show channels count" else "+OK hangup all"
+    monkeypatch.setattr(procs, "pid", lambda name: 4242)
+    monkeypatch.setattr(procs, "stop", lambda name: stopped.append((name, len(sent))) or True)
+    monkeypatch.setattr(esl, "api_local", api)
+    cli._stop("freeswitch")
+    assert sent == ["hupall NORMAL_CLEARING", "show channels count", "show channels count"]
+    assert stopped == [("freeswitch", 3)]
+
+
+def test_a_freeswitch_that_doesnt_answer_is_stopped_anyway(monkeypatch):
+    def refused(cmd):
+        raise ConnectionRefusedError("nothing on the port")
+    stopped = []
+    monkeypatch.setattr(procs, "pid", lambda name: 4242)
+    monkeypatch.setattr(procs, "stop", lambda name: stopped.append(name) or True)
+    monkeypatch.setattr(esl, "api_local", refused)
+    cli._stop("freeswitch")
+    assert stopped == ["freeswitch"]
+
+
 def test_down_stops_the_daemon_first_and_freeswitch_last(monkeypatch):
     stopped = []
     monkeypatch.setattr(cli, "_stop", stopped.append)
@@ -192,6 +218,7 @@ def test_a_service_already_running_is_not_started_twice(monkeypatch, capsys):
 
 def test_stop_ends_a_running_service_and_forgets_its_pid(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(procs, "RUN", tmp_path)
+    monkeypatch.setattr(cli, "_ask_daemon_to_stop", lambda: None)  # the child is no daemon to ask
     child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
         (tmp_path / "daemon.pid").write_text(str(child.pid))

@@ -76,8 +76,9 @@ address in `phone status`.
 - Voice Mail: **500**
 - Subscribe for MWI: **Disabled** (FreeSWITCH sends unsolicited notifications; this is the default)
 
-Confirm. The power LED flashes red when there are questions waiting. (Linphone ignored these notifications in
-testing, so this is the first real check of the light.)
+Confirm. The power LED flashes red while a question waits on voicemail, and with `screen_push` (step 12) the
+screen shows the question with "(voicemail waiting)". Dial 500 to hear and answer it. (Linphone ignores these
+notifications; only the desk phone shows the light.)
 
 ## 9. Time
 
@@ -96,7 +97,8 @@ testing, so this is the first real check of the light.)
 
 **Claude soft key (live, use this).** The phone fetches the list on every press.
 **Dsskey → Programmable Key**: on the soft key that was Directory, set Type **XML Browser**, Label `Claude`,
-Value `http://<pc-ip>:8766/sessions.xml`. Confirm. Press it, pick a session, press Dial.
+Value `http://<pc-ip>:8766/sessions.xml`. Confirm. Press it: "Claude (N live)" lists each session as
+`<ext> <repo>/<branch>`, then 500 Voicemail. Pick one and press Dial.
 
 **Directory phonebook (cached).** Remote phonebooks refresh at most hourly, and nested folders are
 prefetched with the top level, so this list goes stale. Kept for completeness (Menu → Directory → Claude):
@@ -128,6 +130,12 @@ meeting, and switching it off ends that meeting's hold early.
    `.venv\Scripts\python -m keyring set claude-phone desk-admin`, then type the password at the prompt. Without it,
    only step 2 works: the DND key still controls the hold, but the PC can't switch the phone's DND itself.
 
+The first time the PC presses a key, the phone asks on its screen whether to allow remote control: accept it. It
+asks only once, but until you do, that press waits and any press sent meanwhile is lost. To get it out of the way
+now rather than at your first meeting, switch DND on from the PC:
+`.venv\Scripts\python -c "import asyncio; from claude_phone import screen; print(asyncio.run(screen.press('DNDOn')))"`.
+Accept the prompt; the phone's DND goes on and `phone.log` shows `phone DND on`. Switch DND off with the phone's key.
+
 After a wrong password the phone locks its web login for a few minutes; the daemon stops trying after
 one refusal until it restarts.
 
@@ -136,12 +144,30 @@ remembers it, and later ones go only to a phone showing the same one (anything e
 admin password; `phone.log` says so). A new phone, or this one after a factory reset, has a new certificate:
 run `phone desk-cert reset` once.
 
-## Ringtones
+## 14. Ringtones per repo
 
-Each repo gets its own ringtone (1-8), sent as `Alert-Info: <http://127.0.0.1>;info=RingN`. The T31P plays it with no setup.
-`phone list` shows each repo's ring. To pin one: `[repo_ringtones]` in `~/.claude-phone/config.toml`, e.g. `lemon-stand = 3`.
+Each repo gets its own ringtone, sent as `Alert-Info: <http://127.0.0.1>;info=RingN`. The phone takes the keyword
+(`RingN`) and plays the file mapped to it; with no mapping, every call plays the default ring.
+
+**Settings → Ring**
+| Row | Internal Ringer Text | Internal Ringer File |
+|---|---|---|
+| 1 | `Ring1` | Ring1.wav |
+| 2 | `Ring2` | Ring2.wav |
+| 3 | `Ring3` | Ring3.wav |
+| 4 | `Ring4` | Ring4.wav |
+| 5 | `Ring5` | Splash.wav |
+
+Confirm. Leave rows 6-10 empty. Firmware 124.86 has only these files and Silent.wav; never map a keyword to
+Silent.wav, or that repo's calls ring without a sound.
+
+`phone list` shows each repo's ring. Each new repo gets the least-used of rings 1-5, so repos share a ring only
+from the sixth on. To pick one yourself, add it under `[repo_ringtones]` at the end of `~/.claude-phone/config.toml`,
+e.g. `lemon-stand = 3`, then run `phone restart daemon`.
 
 ## Notes
 
+- **Tested on:** a T31P with firmware 124.86.0.40 (2026-10-18).
 - **DND:** the phone rejects calls with code 480. `call_<name>` treats that as "not answered" and leaves a voicemail.
+- **Reject key:** the phone answers 486 Busy; `call_<name>` leaves a voicemail then too.
 - **Caller ID length:** the T31P shows 17 characters, then scrolls the rest. `callerid_max` (17) trims the branch first, then the repo.

@@ -46,7 +46,7 @@ operator_voice = "windows:Microsoft Zira Desktop"  # dial 0
 # [repo_voices]
 # lemon-stand = "windows:Microsoft David Desktop"
 
-# Per-repo ringtones (Yealink Ring1-8). Unlisted repos get the least-used ring on first sight.
+# Per-repo ringtones, 1-5 (docs/t31p-setup.md step 14). Unlisted repos get the least-used ring on first sight.
 # [repo_ringtones]
 # lemon-stand = 3
 

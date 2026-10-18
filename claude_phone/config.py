@@ -96,7 +96,7 @@ class Settings:
     repo_voices: dict = field(default_factory=dict)  # repo name -> "engine:name"
     # Phonebook for the T31P's Directory: the one listener on the LAN, limited to lan_cidr.
     phonebook_port: int = 8766
-    # repo name -> T31P ringtone 1-8. Unlisted repos get a stable pick from their name.
+    # repo name -> T31P ringtone 1-5 (Ring1-4, 5 = Splash). Unlisted repos get the least-used one on first sight.
     repo_ringtones: dict = field(default_factory=dict)
     # Push to the ntfy app when a call is missed. The topic is a secret in the keychain (`phone push`).
     ntfy_server: str = "https://ntfy.sh"
@@ -162,7 +162,7 @@ DESCRIPTIONS = {
     "elevenlabs_model": "the ElevenLabs model",
     "repo_voices": "a voice per repo: [repo_voices] with <repo> = \"engine:name\"",
     "phonebook_port": "the port on lan_ip for the T31P's Directory and DND key",
-    "repo_ringtones": "a Yealink ringtone (1-8) per repo",
+    "repo_ringtones": "a Yealink ringtone (1-5) per repo",
     "ntfy_server": "the ntfy server missed-call pushes go through",
     "push_text": "include the question in missed-call pushes (false: only who called)",
     "autostart": "start claude-phone when VS Code opens (false: only with `phone up` or /claude-phone)",

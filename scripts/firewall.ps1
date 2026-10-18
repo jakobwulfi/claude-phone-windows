@@ -11,13 +11,16 @@ if (-not (Test-Path $python)) { throw "No virtualenv at $python. Set up claude-p
 
 # The ports come from claude-phone's own config, so they can't drift from what FreeSWITCH and the daemon use.
 # The code goes in on stdin: Windows PowerShell 5.1 strips the double quotes from a native command's arguments.
-$settings = @'
+$json = @'
 import json
 from claude_phone import cli, config
 s = config.load()
 print(json.dumps({"sip": s.sip_port, "rtp": f"{cli.RTP_START}-{cli.RTP_END}", "phonebook": s.phonebook_port,
                   "freeswitch": s.freeswitch_exe}))
-'@ | & $python - | ConvertFrom-Json
+'@ | & $python -
+# A failing native command doesn't stop the script ($ErrorActionPreference covers cmdlets only).
+if ($LASTEXITCODE -ne 0 -or -not $json) { throw "Couldn't read claude-phone's settings (see the Python error above)." }
+$settings = $json | ConvertFrom-Json
 
 Get-NetFirewallRule -DisplayName 'claude-phone *' -ErrorAction SilentlyContinue | Remove-NetFirewallRule
 

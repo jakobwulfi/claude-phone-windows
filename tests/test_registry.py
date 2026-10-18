@@ -57,7 +57,14 @@ def test_remove_missing():
 
 
 def test_ringtones_least_used_and_stable():
-    rings = [registry.ringtone(f"repo{i}") for i in range(9)]
-    assert rings[:8] == list(range(1, 9))
-    assert rings[8] == 1
+    rings = [registry.ringtone(f"repo{i}") for i in range(6)]
+    assert rings[:5] == list(range(1, 6))  # the T31P plays Ring1-4 and Splash
+    assert rings[5] == 1
     assert registry.ringtone("repo3") == 4
+
+
+def test_a_ring_the_phone_has_no_sound_for_is_given_again():
+    with registry.connect() as db:  # assigned when eight rings were handed out
+        db.execute("INSERT INTO ringtones (repo, ring) VALUES ('old', 7), ('kept', 1)")
+    assert registry.ringtone("old") == 2
+    assert registry.ringtone("old") == 2
