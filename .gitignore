@@ -3,6 +3,8 @@ __pycache__/
 *.egg-info/
 vscode-extension/node_modules/
 vscode-extension/out/
+visualstudio-extension/**/bin/
+visualstudio-extension/**/obj/
 *.vsix
 *.stackdump
 .coverage
