@@ -32,8 +32,7 @@ internal sealed class PhoneToolWindowData : NotifyPropertyChangedObject
 {
     private const string Indent = "    ";
 
-    // Localhost only: a proxy configured for the system must never get this request.
-    private static readonly HttpClient Http = new(new SocketsHttpHandler { UseProxy = false });
+    private static readonly HttpClient Http = Daemon.NewHttpClient();
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(15);
 
     private readonly object sync = new();

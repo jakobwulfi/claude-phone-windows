@@ -7,6 +7,8 @@
     <LangVersion>12</LangVersion>
     <NeutralLanguage>en-US</NeutralLanguage>
     <RootNamespace>ClaudePhone.VisualStudio</RootNamespace>
+    <!-- Visual Studio only replaces an installed extension with a higher version: raise it with every release. -->
+    <Version>1.1.0</Version>
   </PropertyGroup>
 
   <ItemGroup>

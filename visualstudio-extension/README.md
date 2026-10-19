@@ -4,9 +4,15 @@ A phone button in Visual Studio. It opens a small window listing the Claude Code
 about, grouped by where each runs (Visual Studio's Terminal, PowerShell, Windows Terminal, VS Code...), with each
 session's extension and status and a line on the phone system. It refreshes every 15 seconds while open.
 
-It only displays. The daemon types phone messages into a session in Visual Studio's Terminal window itself, by writing
+It doesn't type: the daemon types phone messages into a session in Visual Studio's Terminal window itself, by writing
 key events into that console, so nothing here needs a token or a port of its own. It reads the daemon's
 `GET /sessions` on `127.0.0.1`, on the `daemon_port` in `~/.claude-phone/config.toml` (8765 if there isn't one).
+
+**Autostart.** With `phone config set autostart on`, the extension runs `phone up` when Visual Studio opens and
+claude-phone isn't running, the same as the VS Code extension. It finds `phone.exe` through
+`~/.claude-phone/phone.json`, which that command leaves behind. The extension is set to load as soon as Visual Studio
+is up (whether or not a solution is open) so this can run at launch; each start adds a line to
+`~/.claude-phone/logs/visualstudio-extension.log` saying what it did.
 
 Where it appears after you install it: the **claude-phone** toolbar (View → Toolbars), **Tools → claude-phone** and
 **View → Other Windows → claude-phone**. Needs Visual Studio 2022 17.14 or newer, including Visual Studio 2026.

@@ -10,6 +10,9 @@ public static class Daemon
 
     private static readonly Regex PortLine = new(@"^\s*daemon_port\s*=\s*(\d+)", RegexOptions.Multiline);
 
+    /// <summary>A client for the daemon on localhost: a proxy configured for the system must never get that request.</summary>
+    public static HttpClient NewHttpClient() => new(new SocketsHttpHandler { UseProxy = false });
+
     /// <summary>The folder the daemon keeps its files in: CLAUDE_PHONE_HOME, else ~/.claude-phone.</summary>
     public static string PhoneHome() =>
         Environment.GetEnvironmentVariable("CLAUDE_PHONE_HOME") is { Length: > 0 } home
