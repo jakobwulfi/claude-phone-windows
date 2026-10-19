@@ -62,6 +62,8 @@ _TABLES_V1 = (
 MIGRATIONS: tuple[tuple[str, ...], ...] = (
     _TABLES_V1,
     ("CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL)",),  # small daemon state
+    # Where the session runs ("VS Code", "Visual Studio", "PowerShell"...). Every session so far was in VS Code.
+    ("ALTER TABLE sessions ADD COLUMN host TEXT", "UPDATE sessions SET host='VS Code' WHERE term_id LIKE 'vscode:%'"),
 )
 SCHEMA_VERSION = len(MIGRATIONS)
 _prepared: Path | None = None  # the database this process has brought up to date
@@ -81,6 +83,7 @@ class Session:
     status: str
     started_at: float
     updated_at: float
+    host: str | None = None
 
     @property
     def label(self) -> str:
@@ -152,7 +155,7 @@ def _session(row) -> Session | None:
 
 
 def register(session_id: str, repo: str, branch: str | None, worktree: str | None,
-             cwd: str | None, term_id: str | None) -> Session:
+             cwd: str | None, term_id: str | None, host: str | None = None) -> Session:
     """Add a session and give it an extension. A new session in a tab that already has one
     (after /clear, resume, compact) inherits that tab's extension."""
     s = config.load()
@@ -177,12 +180,12 @@ def register(session_id: str, repo: str, branch: str | None, worktree: str | Non
                 raise RuntimeError("no free extensions")
         db.execute(
             """INSERT INTO sessions (session_id, ext, repo, branch, worktree, cwd, term_id, status, started_at,
-                                     updated_at)
-               VALUES (?,?,?,?,?,?,?, 'idle', ?, ?)
+                                     updated_at, host)
+               VALUES (?,?,?,?,?,?,?, 'idle', ?, ?, ?)
                ON CONFLICT(session_id) DO UPDATE SET repo=excluded.repo, branch=excluded.branch,
                  worktree=excluded.worktree, cwd=excluded.cwd, term_id=excluded.term_id,
-                 updated_at=excluded.updated_at""",
-            (session_id, ext, repo, branch, worktree, cwd, term_id, now, now),
+                 updated_at=excluded.updated_at, host=excluded.host""",
+            (session_id, ext, repo, branch, worktree, cwd, term_id, now, now, host),
         )
         db.execute("COMMIT")
         return _session(db.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone())

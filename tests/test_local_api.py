@@ -29,16 +29,16 @@ def get(controller):
 
 
 def test_session_list_has_every_live_session_and_the_health(get):
-    registry.register("a", "site-be-v2", "main", None, "/r", "vscode:100")
-    registry.register("b", "site-fe", "feature/x", "x-tree", "/f", "vscode:200")
+    registry.register("a", "site-be-v2", "main", None, "/r", "vscode:100", "VS Code")
+    registry.register("b", "site-fe", "feature/x", "x-tree", "/f", "con:200:5", "Visual Studio")
     registry.set_status("b", "working")
 
     status, body = asyncio.run(get("/sessions"))
 
     assert status == 200
-    assert [(s["ext"], s["label"], s["status"], s["term_id"]) for s in body["sessions"]] == [
-        (301, "site-be-v2/main", "idle", "vscode:100"),
-        (302, "site-fe/x-tree", "working", "vscode:200"),
+    assert [(s["ext"], s["label"], s["status"], s["term_id"], s["host"]) for s in body["sessions"]] == [
+        (301, "site-be-v2/main", "idle", "vscode:100", "VS Code"),
+        (302, "site-fe/x-tree", "working", "con:200:5", "Visual Studio"),
     ]
     assert body["health"]["freeswitch"] is True
     assert body["health"]["desk_online"] is True

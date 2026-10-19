@@ -487,12 +487,19 @@ class Controller:
     def caller(self, body: dict) -> dict:
         """Who is calling: the registered session, registering it if its tab predates the hooks."""
         agent = (body.get("from_agent") or "").strip() or None
-        sess = registry.find(body.get("session_id"), body.get("term_id"))  # term_id: the caller's VS Code terminal
-        if not sess and body.get("session_id") and body.get("term_id"):
+        term_id = body.get("term_id")  # the caller's terminal
+        if not isinstance(term_id, str) or len(term_id) > 100:
+            term_id = None
+        sess = registry.find(body.get("session_id"), term_id)
+        if not sess and body.get("session_id") and term_id:
             cwd = body.get("cwd") or os.getcwd()
             try:
-                sess = registry.register(body["session_id"], *repo_info(cwd), cwd, body["term_id"])
-                lg.info("registered unknown caller ext=%s %s", sess.ext, sess.label)
+                if inject.accepts(term_id):
+                    sess = registry.register(body["session_id"], *repo_info(cwd), cwd, term_id,
+                                             inject.host_of(term_id))
+                    lg.info("registered unknown caller ext=%s %s", sess.ext, sess.label)
+                else:
+                    lg.warning("not registering a caller whose terminal id names no running claude: %r", term_id)
             except Exception as e:
                 lg.warning("could not register caller: %r", e)
         if sess:

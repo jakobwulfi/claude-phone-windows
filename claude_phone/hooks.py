@@ -81,9 +81,9 @@ def run(event: str) -> int:
             cwd = payload.get("cwd") or os.getcwd()
             term = inject.terminal_id()
             if not term:
-                return 0  # not in a VS Code terminal: nothing we could type into
+                return 0  # no shell above us (WSL, SSH, a service): nothing we could type into
             repo, branch, worktree = repo_info(cwd)
-            s = registry.register(sid, repo, branch, worktree, cwd, term)
+            s = registry.register(sid, repo, branch, worktree, cwd, term, inject.host_of(term))
             registry.ringtone(repo)  # assign on first sight so repos get distinct rings
             lg.info("session start ext=%s %s sid=%s source=%s", s.ext, s.label, sid, payload.get("source"))
         elif event == "session-end":

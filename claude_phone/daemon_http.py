@@ -118,7 +118,8 @@ async def http_shutdown(c: Controller, request: web.Request) -> web.Response:
 async def http_session_list(c: Controller, request: web.Request) -> web.Response:
     """Live sessions and the system's state, for the VS Code status bar."""
     sessions = [{"ext": x.ext, "label": x.label, "repo": x.repo, "branch": x.branch, "worktree": x.worktree,
-                 "status": "working" if await c.still_working(x) else "idle", "term_id": x.term_id}
+                 "status": "working" if await c.still_working(x) else "idle", "term_id": x.term_id,
+                 "host": x.host}
                 for x in registry.all_sessions()]
     return web.json_response({"sessions": sessions, "health": await c.health()})
 

@@ -321,7 +321,7 @@ def cmd_list(a) -> None:
     if not rows:
         print("No live sessions.")
         return
-    print(f"{'EXT':4} {'REPO':22} {'BRANCH':28} {'STATUS':8} {'RING':5} SINCE")
+    print(f"{'EXT':4} {'REPO':22} {'BRANCH':28} {'HOST':14} {'STATUS':8} {'RING':5} SINCE")
     overrides = config.load().repo_ringtones
     for s in rows:
         b = s.branch or ""
@@ -329,11 +329,11 @@ def cmd_list(a) -> None:
             b = f"{b} [{s.worktree}]"
         since = datetime.fromtimestamp(s.started_at).strftime("%H:%M")
         ring = overrides.get(s.repo) or registry.ringtone(s.repo)
-        print(f"{s.ext:<4} {s.repo[:22]:22} {b[:28]:28} {s.status:8} {ring:<5} {since}")
+        print(f"{s.ext:<4} {s.repo[:22]:22} {b[:28]:28} {(s.host or '-')[:14]:14} {s.status:8} {ring:<5} {since}")
 
 
 def cmd_type(a) -> None:
-    """Type text into a session as if it came from the phone, to test the VS Code bridge without a call."""
+    """Type text into a session as if it came from the phone, to test typing into its terminal without a call."""
     from . import inject
     sess = registry.by_ext(a.ext)
     if not sess:

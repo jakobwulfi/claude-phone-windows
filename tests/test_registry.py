@@ -23,6 +23,25 @@ def test_a_database_from_before_the_state_table_gets_it_on_connect(monkeypatch):
     assert registry.get_state("k") == "v"
 
 
+def test_a_database_from_before_hosts_gets_the_column_and_its_vscode_sessions_are_labelled(monkeypatch):
+    insert = "INSERT INTO sessions (session_id, ext, repo, term_id, started_at, updated_at) VALUES "
+    old = sqlite3.connect(config.DB_PATH)  # version 2: sessions without a host, one of them in VS Code
+    old.executescript(
+        ";".join(registry.MIGRATIONS[0] + registry.MIGRATIONS[1]) + "; PRAGMA user_version = 2;"
+        + insert + "('a', 301, 'r', 'vscode:5', 0, 0);" + insert + "('b', 302, 'r', NULL, 0, 0);")
+    old.close()
+    monkeypatch.setattr(registry, "_prepared", None)
+    assert [(s.session_id, s.host) for s in registry.all_sessions()] == [("a", "VS Code"), ("b", None)]
+
+
+def test_a_sessions_host_is_kept_and_a_new_session_in_the_same_tab_keeps_the_extension():
+    s = registry.register("s", "repo", "main", None, "/r", "con:7:1", "PowerShell")
+    assert registry.find("s").host == "PowerShell"
+    registry.register("s", "repo", "main", None, "/r", "con:7:1", "Windows Terminal")
+    assert registry.find("s").host == "Windows Terminal"
+    assert registry.register("t", "repo", "main", None, "/r", "con:7:1", "Windows Terminal").ext == s.ext  # /clear
+
+
 def test_lowest_free_extension():
     a = registry.register("a", "repo-a", "main", None, "/a", "tab-a")
     b = registry.register("b", "repo-b", "main", None, "/b", "tab-b")

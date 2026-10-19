@@ -30,7 +30,16 @@ def test_a_session_started_in_a_vscode_terminal_gets_an_extension_named_after_it
     assert [(s.ext, s.label) for s in registry.all_sessions()] == [(301, "site-be/main"), (302, "site-be/login-tree")]
 
 
-def test_a_session_outside_a_vscode_terminal_or_a_subagent_is_not_registered(monkeypatch, tmp_path):
+def test_a_session_in_any_console_registers_with_the_app_it_runs_in(monkeypatch, tmp_path):
+    for term, host in (("con:10:111", "Visual Studio"), ("con:20:222", "Windows Terminal"), ("vscode:30", "VS Code")):
+        monkeypatch.setattr(inject, "terminal_id", lambda term=term: term)
+        monkeypatch.setattr(inject, "host_of", lambda t, host=host: host)
+        hook(monkeypatch, "session-start", session_id=term, cwd=str(tmp_path))
+    assert [(s.term_id, s.host) for s in registry.all_sessions()] == [
+        ("con:10:111", "Visual Studio"), ("con:20:222", "Windows Terminal"), ("vscode:30", "VS Code")]
+
+
+def test_a_session_with_no_shell_above_it_or_a_subagent_is_not_registered(monkeypatch, tmp_path):
     monkeypatch.setattr(inject, "terminal_id", lambda: None)  # nothing could type into it
     hook(monkeypatch, "session-start", cwd=str(tmp_path))
     monkeypatch.setattr(inject, "terminal_id", lambda: "vscode:1")
