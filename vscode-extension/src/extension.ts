@@ -7,7 +7,17 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import { autostart } from './autostart';
 import { startBridgeServer, TerminalHost, TerminalInfo } from './server';
-import { entries, fetchSessions, healthLine, SessionEntry, SessionList, statusText, statusTooltip } from './sessions';
+import {
+  entries,
+  fetchSessions,
+  groups,
+  healthLine,
+  SessionEntry,
+  SessionList,
+  statusText,
+  statusTooltip,
+  whereItRuns,
+} from './sessions';
 
 // Text, then Enter separately: Claude Code treats a pasted trailing newline as part of the text.
 const SUBMIT_DELAY_MS = 300;
@@ -82,7 +92,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   try {
     const server = await startBridgeServer(terminals, token);
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify({ pid: process.pid, port: server.port, token }), { mode: 0o600 });
+    // app: which editor this is (VS Code, Cursor, Windsurf, VSCodium, Insiders), for whoever reads the file.
+    const bridge = { pid: process.pid, port: server.port, token, app: vscode.env.appName };
+    fs.writeFileSync(file, JSON.stringify(bridge), { mode: 0o600 });
     context.subscriptions.push({
       dispose: () => {
         server.close();
@@ -124,7 +136,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     }
     const { entry } = picked;
     if (!entry.terminal || !(await terminals.show(entry.terminal.pid))) {
-      vscode.window.showInformationMessage(`${entry.ext} ${entry.label} runs in another VS Code window.`);
+      vscode.window.showInformationMessage(`${entry.ext} ${entry.label} runs in ${whereItRuns(entry)}.`);
     }
   });
 
@@ -138,17 +150,14 @@ interface SessionPickItem extends vscode.QuickPickItem {
 function quickPickItems(list: SessionEntry[]): SessionPickItem[] {
   const toItem = (entry: SessionEntry): SessionPickItem => ({
     label: `${entry.ext}  ${entry.label}`,
-    description: entry.status,
+    description: `${entry.status} · ${entry.host}`,
     detail: entry.terminal ? `Terminal "${entry.terminal.name}"` : undefined,
     entry,
   });
-  const here = list.filter((e) => e.terminal);
-  const elsewhere = list.filter((e) => !e.terminal);
-  const separator = (label: string): SessionPickItem => ({ label, kind: vscode.QuickPickItemKind.Separator });
-  return [
-    ...(here.length ? [separator('This window'), ...here.map(toItem)] : []),
-    ...(elsewhere.length ? [separator('Other VS Code windows'), ...elsewhere.map(toItem)] : []),
-  ];
+  return groups(list).flatMap(({ title, entries: grouped }) => {
+    const separator: SessionPickItem = { label: title, kind: vscode.QuickPickItemKind.Separator };
+    return [separator, ...grouped.map(toItem)];
+  });
 }
 
 function daemonPort(): number {

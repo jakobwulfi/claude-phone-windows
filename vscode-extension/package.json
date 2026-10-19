@@ -2,7 +2,7 @@
   "name": "claude-phone",
   "displayName": "claude-phone",
   "description": "Lets the claude-phone daemon type phone messages into Claude Code sessions running in VS Code terminals, and lists the sessions with their extensions.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "publisher": "jakobwulfi",
   "license": "MIT",
   "repository": {
