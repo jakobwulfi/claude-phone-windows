@@ -16,7 +16,15 @@ from mcp.types import ToolAnnotations
 
 from . import config, configedit, inject
 
-mcp = MCPServer("claude-phone")
+# Shown to every session with this server: what's said by phone ([By phone], [Phone answer …], [Phone transfer …],
+# call_<owner>'s answer) arrives as whisper's transcript, not as typed words.
+INSTRUCTIONS = (
+    "Whatever the user says on the phone reaches you through speech-to-text. Read it for what the user means, not "
+    "word for word. Names, numbers, repo names and technical terms could be misheard, and a hiccup can drop words. "
+    "If a word looks wrong, take the most likely meaning that fits the context. If the meaning stays unclear and "
+    "acting on the wrong reading would be costly or hard to undo, ask instead of guessing.")
+
+mcp = MCPServer("claude-phone", instructions=INSTRUCTIONS)
 
 
 def _body(**kw) -> dict:

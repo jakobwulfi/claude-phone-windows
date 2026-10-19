@@ -74,6 +74,12 @@ def test_claude_is_told_every_setting_it_may_change_and_what_it_may_be():
         assert f"{key} ({spec.allowed})" in tools["change_phone_setting"].description
 
 
+def test_every_session_is_told_that_phone_words_come_through_speech_to_text():
+    told = mcp_server.mcp.instructions
+    assert told.startswith("Whatever the user says on the phone reaches you through speech-to-text.")
+    assert "ask instead of guessing" in told
+
+
 def test_calling_messaging_and_reading_settings_are_read_only_so_plan_mode_lets_them_run():
     slug = config.load().owner_slug
     read_only = {t.name for t in asyncio.run(mcp_server.mcp.list_tools())

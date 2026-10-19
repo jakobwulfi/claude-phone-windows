@@ -5,14 +5,15 @@ A desk phone (or a softphone) becomes the line between you and your Claude Code 
 This is a Windows port of [risingpower/claude-phone](https://github.com/risingpower/claude-phone), which runs on
 macOS. [Watch the original in action](https://www.instagram.com/reel/DeY8JPmszXs/).
 
-> **Status:** every call flow works end to end on Windows with Linphone as the phone: dialling in, Claude
-> calling you, voicemail, hold music, the operator, all-hands, announcements and transfers. Next: a Yealink T31P
-> desk phone ([docs/t31p-setup.md](docs/t31p-setup.md)) and its message light, which Linphone doesn't show.
+> **Status:** every call flow works end to end on Windows, on a Yealink T31P desk phone
+> ([docs/t31p-setup.md](docs/t31p-setup.md)) and on Linphone: dialling in, Claude calling you, voicemail and the
+> message light (desk phone only), hold music, the operator, all-hands, announcements, transfers, screen messages,
+> the DND key and per-repo ringtones.
 
 - **Claude rings you:** a session calls the `call_<name>` MCP tool (`call_sam` for `owner_name = "Sam"`). The phone rings with `repo/branch` as caller ID; the spoken answer comes back as the tool result.
 - **Claude announces:** `notify_<name>` rings, reads a short announcement and hangs up.
 - **Transfers:** `transfer_call` puts you through to another session when you ask the wrong one.
-- **You ring Claude:** every live session has an extension (301-399). Dial it, speak, hang up; the words are typed into that session's VS Code terminal and submitted.
+- **You ring Claude:** every live session has an extension (301-399). Dial it, speak, hang up; the words are typed into that session's VS Code terminal and submitted, after `[By phone]` so Claude knows they're a transcript and may be misheard here and there.
 - **Voicemail:** unanswered questions light the message LED. Press Message, answer each one; answers are typed into the asking sessions.
 - **How long you can talk:** up to 5 minutes when you dial in (a session, all-hands or a voicemail reply), and up
   to 60 s when answering Claude's call. A double beep warns you 10 s before the end; press # to finish early.
@@ -29,8 +30,8 @@ you set them up.
   you. With the Claude Code extension, set `"claudeCode.useTerminal": true` so it opens sessions in a terminal.
 - Python 3.12+, Node.js LTS (to build the extension), ffmpeg, whisper.cpp and FreeSWITCH. About 200 MB of disk
   for the speech model.
-- [Linphone](https://linphone.org) (free) as the phone while testing. A SIP desk phone later: the original was
-  built on a Yealink T31P ([docs/t31p-setup.md](docs/t31p-setup.md)); a T30 should behave the same but is untested.
+- A phone: [Linphone](https://linphone.org) (free) on the same PC, or a SIP desk phone. It's tested on a Yealink
+  T31P ([docs/t31p-setup.md](docs/t31p-setup.md)); a T30 should behave the same but is untested.
 - No accounts or subscriptions. ElevenLabs (nicer voices) and ntfy (missed-call pushes) are optional.
 
 ## Dial plan

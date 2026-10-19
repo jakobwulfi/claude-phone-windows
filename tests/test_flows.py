@@ -92,14 +92,14 @@ def answering(ctl, monkeypatch, call, why=""):
 
 # --- dialling in ---
 
-def test_dial_in_types_what_was_said_after_any_transfer_prefix(ctl):
+def test_dial_in_types_what_was_said_marked_by_phone_or_by_the_transfer_prefix(ctl):
     registry.register("s", "site-be-v2", "main", None, "/r", "tab")
     ctl.heard = ["What colour should the button be?", "Testing."]
     call = FakeCall()
     assert run(ctl.dial_session(call, 301)) == "What colour should the button be?"
     assert "tts:Sent." in call.played
     run(ctl.dial_session(FakeCall(), 301, prefix="[Phone transfer from app-fe-v2] Sam says:"))
-    assert ctl.typed == [(301, "What colour should the button be?"),
+    assert ctl.typed == [(301, "[By phone] What colour should the button be?"),
                          (301, "[Phone transfer from app-fe-v2] Sam says: Testing.")]
 
 
@@ -183,7 +183,7 @@ def test_the_operator_puts_you_through_to_the_session_you_name(ctl, operator_voi
     call = FakeCall()
     run(ctl.operator(call))
     assert "op:" + tts.OPERATOR["connecting"].format(label=ctl.spoken_name(be)) in call.played
-    assert ctl.typed == [(be.ext, "Is the API up?")]
+    assert ctl.typed == [(be.ext, "[By phone] Is the API up?")]
 
 
 def test_the_operator_asks_which_one_then_gives_up(ctl, operator_voice):

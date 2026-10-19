@@ -24,6 +24,7 @@ lg = log.get("daemon")
 VOICEMAIL_MESSAGE = ("{owner} didn't answer. A voicemail has been left. Carry on with other work or your best "
                      "assumption; the answer will arrive later as a new message in this session.")
 ANSWER_PREFIX = "[Phone answer to your earlier question]"
+BY_PHONE_PREFIX = "[By phone]"  # a dial-in, direct or through the operator: tells the session it's a transcript
 ALLHANDS_PREFIX = "[All-hands message from {owner}, sent to every session]"
 HOLD_MAX = 600  # seconds on hold before the message is taken anyway
 RECORDING_WAIT = 3.0  # seconds to wait after hangup for FreeSWITCH to finish writing the recording
@@ -353,7 +354,7 @@ class Controller:
             await call.play(await tts.op_async(tts.OPERATOR["which"].format(options=options)), tts.beep())
         await call.play(await tts.op_async(tts.OPERATOR["unplaced"]))
 
-    async def dial_session(self, call: Call, ext: int, prefix: str = "", source: str = "") -> str | None:
+    async def dial_session(self, call: Call, ext: int, prefix: str = BY_PHONE_PREFIX, source: str = "") -> str | None:
         """Greet, record, transcribe, type into the session. Returns what was sent (None if nothing)."""
         source = source or f"dial-in {ext}"
         sess = registry.by_ext(ext)
