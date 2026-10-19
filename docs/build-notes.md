@@ -33,7 +33,11 @@ Asterisk has no Windows build; the FreeSWITCH 1.11.x MSI runs natively.
   works around that for testing.
 - Linphone re-registers on its own timer, so after a FreeSWITCH restart it can take a while to show as registered.
 
-## 3. Typing into sessions: a VS Code extension
+## 3. Typing into sessions: two routes
+
+**VS Code terminals** are typed into by an extension, the primary route there: it was proven first, needs no
+console tricks, and a window's terminals are listed by VS Code itself. **Every other terminal** (Visual Studio's
+Terminal window, Windows Terminal, PowerShell, cmd) is typed into through the console, see the end of this section.
 
 `vscode-extension/` runs a small HTTP server per VS Code window on 127.0.0.1 (random port, random token, no
 `Origin` header allowed) and leaves `~/.claude-phone/bridges/<window>.json` for the daemon.
@@ -47,6 +51,32 @@ The Claude Code chat panel can't be reached this way: its extension only pre-fil
 session) would work, but custom ones need `--dangerously-load-development-channels`, which Claude Code ignores
 through the Agent SDK that the chat panel runs on. Hence `claudeCode.useTerminal`.
 
+**Through the console.** Visual Studio has no public API for typing into its Terminal window, but every Windows
+console reads keystrokes from an input buffer that any process on the same console can write to. So
+`claude_phone/consoleinject.py` does `FreeConsole`, `AttachConsole(shell pid)`, opens `CONIN$` and calls
+`WriteConsoleInputW` with a key-down and a key-up per UTF-16 unit, waits 0.3 s, then sends Enter as a write of its
+own (the same rhythm as the extension, for the same paste reason). Measured before building it, in a throwaway
+spike on Windows 10, against a real `claude` with its window in the background: it works in a standalone PowerShell
+window (classic conhost) and in the ConPTY terminals of VS Code and Visual Studio 2026, with æøå and an emoji
+intact (Claude answered `U+1F600`), and text sent while the session is busy waits for its turn. Plain key events
+were enough: no `VK_PACKET`, no key-down-only trick. Windows Terminal wasn't installed to try; its ConPTY should
+behave like the other two. (An emoji read back from the console buffer as a replacement character; that was the
+spike's screen reader, not the typing.)
+
+- **A process of its own.** Attaching to another console detaches the caller from its own, which would take the
+  daemon's log away, so `inject._run_helper` runs `python -I -m claude_phone.consoleinject <pid> <creation time>`
+  with `CREATE_NO_WINDOW`. The text goes in on stdin: other processes can read command lines. The venv's
+  `python.exe` is a launcher for the real interpreter, so a timeout kills the whole process tree, or a helper left
+  behind could type later.
+- **Never into a bare shell.** If `claude` died without its SessionEnd hook, Enter would run the phone transcript as
+  a shell command. So typing is refused unless an interactive `claude` runs under that very shell: checked under the
+  typing lock (a message queued behind another is not checked until its turn), and again by the helper before the
+  text and before Enter. `claude -p` doesn't count: it never reads the console. The Claude desktop app is also a
+  `claude.exe` and is told apart by its install folder.
+- **Elevated consoles** can't be attached to from a daemon that isn't elevated (Windows error 5). It's reported as
+  such. The daemon shouldn't be elevated either, to avoid typing into any console of the user's it was never meant
+  to reach.
+
 ## 4. Session identity
 
 The process chain is `claude.exe` → the terminal's shell (`Terminal.processId`) → VS Code's pty host. Hooks and the
@@ -55,6 +85,33 @@ the bridges which ancestor is a terminal's shell: `vscode:<shell pid>`. It stays
 restarting `claude` in the tab. The MCP server also gets `CLAUDE_CODE_SESSION_ID` and `CLAUDE_PROJECT_DIR`. Tool
 calls carry no subagent id, hence the optional `from_agent` input. The SessionEnd hook has a 1.5 s default
 timeout, so it is a single SQLite delete.
+
+**Terminals that aren't VS Code's** get `con:<shell pid>:<its creation time in ms>`. The creation time is there so a
+recycled pid can never match: it's checked before every injection, by the sweeper and by the helper. The shell is the
+nearest known one above `claude` (`pwsh`, `powershell`, `cmd`, `nu`), found with psutil like the VS Code ids, and the
+id stays the same across `/clear` and restarting `claude` in the same window, so the tab keeps its extension. Rules
+that came out of review:
+
+- Not a shell below `claude`: Claude Code's own Bash tool runs under `bash.exe`, and a hook may sit in a `cmd /c`.
+  `bash.exe` isn't a shell here at all: Git Bash's default window (mintty) isn't a Windows console, so "typing" there
+  would report success and reach nothing.
+- A `claude` started by another `claude` (a shell sits between them) gets no id: the shell above the outer one is the
+  outer session's, and registering it would take over that session's extension. `claude -p` never registers either.
+- A VS Code window that doesn't answer in 3 s only holds back sessions under a VS Code-family process; others register
+  (a VS Code terminal that got a console id first and a `vscode:` id later would be a new tab to the registry).
+- `inject.live_term_ids()` is what the sweeper keeps: every `vscode:` terminal from the bridges (an unanswering
+  window still aborts the sweep, so its sessions aren't dropped) plus every running shell's console id.
+- `Controller.caller` takes `term_id` from callers: a `con:` or `vscode:` id is checked (a running shell with an
+  interactive `claude` under it) before an unknown caller is registered.
+
+Where a session runs ("VS Code", "Visual Studio", "Windows Terminal", "PowerShell", ...) is the nearest known app
+above its shell, else the shell's own name, stored in `sessions.host`. Process chains seen on Windows 10 (nearest
+first):
+
+- Visual Studio's Terminal: `claude.exe`, `powershell.exe`, `DevHub.exe`, `devenv.exe`, `explorer.exe`
+- VS Code's terminal: `claude.exe`, `powershell.exe`, `Code.exe`, `Code.exe`, `explorer.exe`
+- a standalone PowerShell window: `claude.exe`, `powershell.exe`, then whatever launched the window
+- not seen: Windows Terminal (`WindowsTerminal.exe`, `OpenConsole.exe`) and cmd.
 
 Esc runs no hook (Stop doesn't fire on an interrupt), so a session would stay "working" and callers would get hold
 music until its next turn. Claude Code writes the interrupt to the session's transcript at once

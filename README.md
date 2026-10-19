@@ -13,23 +13,27 @@ macOS. [Watch the original in action](https://www.instagram.com/reel/DeY8JPmszXs
 - **Claude rings you:** a session calls the `call_<name>` MCP tool (`call_sam` for `owner_name = "Sam"`). The phone rings with `repo/branch` as caller ID; the spoken answer comes back as the tool result.
 - **Claude announces:** `notify_<name>` rings, reads a short announcement and hangs up.
 - **Transfers:** `transfer_call` puts you through to another session when you ask the wrong one.
-- **You ring Claude:** every live session has an extension (301-399). Dial it, speak, hang up; the words are typed into that session's VS Code terminal and submitted, after `[By phone]` so Claude knows they're a transcript and may be misheard here and there.
+- **You ring Claude:** every live session has an extension (301-399). Dial it, speak, hang up; the words are typed into that session's terminal and submitted, after `[By phone]` so Claude knows they're a transcript and may be misheard here and there.
 - **Voicemail:** unanswered questions light the message LED. Press Message, answer each one; answers are typed into the asking sessions.
 - **How long you can talk:** up to 5 minutes when you dial in (a session, all-hands or a voicemail reply), and up
   to 60 s when answering Claude's call. A double beep warns you 10 s before the end; press # to finish early.
 
 Everything runs locally on one PC: FreeSWITCH (the phone exchange), whisper.cpp (speech to text), Windows voices
-or ElevenLabs (text to speech), a small Python daemon, and a VS Code extension that types into terminals. Your voice
+or ElevenLabs (text to speech), a small Python daemon, and optional VS Code and Visual Studio extensions. Your voice
 never leaves the PC; the only things sent out are text to ElevenLabs, if you choose it, and missed-call pushes, if
 you set them up.
 
 ## What you need
 
-- Windows 10 or 11 and VS Code. To dial in to a session, Claude Code must run in **VS Code's terminal**: nothing
-  can submit a prompt to the Claude Code chat panel or the desktop app from outside. Sessions there can still call
-  you. With the Claude Code extension, set `"claudeCode.useTerminal": true` so it opens sessions in a terminal.
-- Python 3.12+, Node.js LTS (to build the extension), ffmpeg, whisper.cpp and FreeSWITCH. About 200 MB of disk
-  for the speech model.
+- Windows 10 or 11. To dial in to a session, Claude Code must run in a **terminal**: VS Code's, Visual Studio's
+  Terminal window, Windows Terminal, or a plain PowerShell or cmd window. Nothing can submit a prompt to the Claude
+  Code chat panel or the desktop app from outside; sessions there can still call you. With the Claude Code VS Code
+  extension, set `"claudeCode.useTerminal": true` so it opens sessions in a terminal.
+  Not covered: Git Bash in its own window (mintty isn't a Windows console), WSL, SSH, and `claude -p` (it never
+  reads the terminal). Run claude-phone and the terminal at the same privilege level: a terminal started as
+  administrator can't be typed into by a daemon that isn't (the log says so), and the daemon shouldn't run elevated.
+- Python 3.12+, ffmpeg, whisper.cpp and FreeSWITCH. Node.js LTS only to build the VS Code extension, and the .NET SDK
+  only to build the Visual Studio one. About 200 MB of disk for the speech model.
 - A phone: [Linphone](https://linphone.org) (free) on the same PC, or a SIP desk phone. It's tested on a Yealink
   T31P ([docs/t31p-setup.md](docs/t31p-setup.md)); a T30 should behave the same but is untested.
 - No accounts or subscriptions. ElevenLabs (nicer voices) and ntfy (missed-call pushes) are optional.
@@ -68,13 +72,20 @@ On any recording: `#` ends it, hanging up also ends it. In voicemail: `#` during
    config (two SIP accounts, nothing else) under `~/.claude-phone/freeswitch`. Allow it through Windows Firewall
    on private networks when asked.
 4. **Python:** `py -3.13 -m venv .venv`, then `.venv\Scripts\pip install -e .`
-5. **VS Code extension:**
+5. **VS Code extension** (types into VS Code's terminals; the other terminals need nothing installed):
    ```powershell
    cd vscode-extension; npm install; npm run package
    code --install-extension (Get-ChildItem *.vsix | Sort-Object LastWriteTime)[-1].FullName
    ```
    Reload VS Code. The phone icon in the status bar shows how many sessions claude-phone knows (`off` when it isn't
-   running). Click it for the list with each session's extension; pick one to show its terminal.
+   running). Click it for the list, grouped by where each session runs, with its extension; pick one to show its
+   terminal.
+
+   **Visual Studio extension** (optional; only lists the sessions): with the .NET SDK,
+   `dotnet build visualstudio-extension\ClaudePhone.Extension -c Release`, close Visual Studio, open the `.vsix` it
+   made in `bin\Release\net8.0-windows8.0`, and start Visual Studio. The button is under Tools → claude-phone and
+   View → Other Windows, and the toolbar under View → Toolbars. Needs Visual Studio 17.14 or newer
+   ([visualstudio-extension/README.md](visualstudio-extension/README.md)).
 6. **Config:** copy `config.example.toml` to `%USERPROFILE%\.claude-phone\config.toml` and set `owner_name`.
    To test on Linphone on the same PC: `ring_ext = "201"` and `sip_port = 5070` (Linphone keeps 5060 for itself).
    Then in Linphone add a third-party SIP account: username `201`, password from `phone secret sip`, domain
@@ -85,7 +96,8 @@ On any recording: `#` ends it, hanging up also ends it. In voicemail: `#` during
 8. **Claude Code wiring** (below), and add [docs/claude-md-snippet.md](docs/claude-md-snippet.md) to `~/.claude/CLAUDE.md`.
    For the `/claude-phone` command, copy [claude/commands/claude-phone.md](claude/commands/claude-phone.md) to
    `%USERPROFILE%\.claude\commands\` and replace `C:/path/to/claude-phone-windows` in it with your clone.
-9. **Try it:** start `claude` in two VS Code terminals. `phone list` shows them as 301 and 302, and
+9. **Try it:** start `claude` in two terminals (VS Code, Visual Studio's Terminal, Windows Terminal or PowerShell, in
+   any mix). `phone list` shows them as 301 and 302 with where each runs, and
    `phone type 301 "what is 2+2"` types into the first one while you work in the other.
 
 ### Claude Code wiring
@@ -265,7 +277,9 @@ kept. Settings that aren't recognised (typos) stay in the file, marked as such, 
 
 `.venv\Scripts\pip install -e .[dev]`, then `.venv\Scripts\pytest`. They run against a throwaway home, a fake call
 and a fake VS Code bridge: no phone exchange, whisper or VS Code needed. One test speaks a few sentences with the
-Windows voices, into files in its temp folder. The extension's own tests: `npm test` in `vscode-extension`.
+Windows voices, into files in its temp folder. The extensions' own tests: `npm test` in `vscode-extension`, and
+`dotnet test visualstudio-extension\ClaudePhone.Core.Tests`. Typing into a real console (the part that needs a
+terminal with `claude` in it) is checked by hand.
 
 Coverage: `.venv\Scripts\pytest --cov=claude_phone --cov-report=term-missing` lists, per file, the share of lines
 the tests run and the lines they never reach.
@@ -274,8 +288,12 @@ Lint: `.venv\Scripts\ruff check claude_phone tests` (rules in `pyproject.toml`; 
 
 ## Troubleshooting
 
-- **Text not typed:** the session must be in `phone list`, and its window must show the phone icon in the status
-  bar. Sessions started before the hooks or the extension were installed have no extension: restart `claude`.
+- **Text not typed:** the session must be in `phone list`. In VS Code its window must show the phone icon in the
+  status bar. Sessions started before the hooks were installed have no extension: restart `claude`. In any other
+  terminal `phone type 301 "hello"` prints why it failed: `claude isn't running in that terminal` (it exited, or
+  something else runs there now), or `that console is elevated` (run the terminal and claude-phone at the same level).
+- **A session isn't listed:** only a `claude` started by hand in a terminal registers. Not `claude -p`, not one that
+  another `claude` started, and not Git Bash's own window, WSL or SSH.
 - **`whisper-server not found`:** put its folder on PATH or set `whisper_server` in config.toml.
 - **Linphone times out registering:** Linphone on the same PC holds UDP 5060 and resets any change to it, so
   FreeSWITCH's replies go astray. Set `sip_port = 5070`, run `phone restart freeswitch`, and use
