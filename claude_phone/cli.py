@@ -163,7 +163,7 @@ SERVICES = {
 }
 
 
-# VS Code windows restored together each run `phone up` (autostart). The first takes this lock and the others leave
+# Editor windows restored together each run `phone up` (autostart). The first takes this lock and the others leave
 # the starting to it. A lock older than this was left by an `up` that was killed; a live one touches its lock every
 # LOCK_TOUCH_S while it downloads the speech model.
 UP_LOCK_STALE_S = 300

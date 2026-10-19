@@ -33,7 +33,7 @@ LOG_FILE = LOGS / "phone.log"
 # One file per VS Code window, written by the claude-phone extension: how to reach that window's terminals.
 BRIDGES = HOME / "bridges"
 CONFIG_FILE = HOME / "config.toml"
-# Where phone.exe is, for the VS Code extension to run `phone up` when autostart is on.
+# Where phone.exe is, for the editor extensions (VS Code, Visual Studio) to run `phone up` when autostart is on.
 PHONE_FILE = HOME / "phone.json"
 MESSAGE_SECONDS_MIN, MESSAGE_SECONDS_MAX = 30, 600
 CALENDAR_SOURCES = ("google", "outlook")  # what calendar_sources may list; diary reads each one's ICS feed
@@ -165,7 +165,7 @@ DESCRIPTIONS = {
     "repo_ringtones": "a Yealink ringtone (1-5) per repo",
     "ntfy_server": "the ntfy server missed-call pushes go through",
     "push_text": "include the question in missed-call pushes (false: only who called)",
-    "autostart": "start claude-phone when VS Code opens (false: only with `phone up` or /claude-phone)",
+    "autostart": "start claude-phone when an editor opens (false: only with `phone up` or /claude-phone)",
 }
 
 
@@ -407,7 +407,7 @@ def ip_warning() -> str | None:
 
 
 def remember_phone_exe() -> None:
-    """Leaves phone.exe's path (beside this venv's python.exe) where the VS Code extension looks for it."""
+    """Leaves phone.exe's path (beside this venv's python.exe) where the editor extensions look for it."""
     exe = Path(sys.executable).with_name("phone.exe")
     if exe.exists():
         HOME.mkdir(parents=True, exist_ok=True)

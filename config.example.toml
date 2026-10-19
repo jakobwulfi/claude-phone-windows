@@ -5,7 +5,7 @@
 #   phone restart freeswitch   lan_ip, sip_port, esl_port, desk_ext, softphone_ext (esl_port: the daemon too)
 #   phone restart whisper      whisper_server, whisper_model, whisper_language, whisper_port (the port: the daemon too)
 owner_name = "Sam"      # [phone config] spoken and typed as "Sam"; the tools become call_sam and notify_sam
-# autostart = true      # [phone config] on/off; start claude-phone when VS Code opens (default: only by `phone up`)
+# autostart = true      # [phone config] on/off; start claude-phone when an editor opens (default: only by `phone up`)
 # lan_ip = "192.168.1.50"     # default: this PC's address. Pin it once the router reserves it
 # lan_cidr = "192.168.1.0/24" # default: lan_ip's /24. Who may reach the phonebook and DND listener (phonebook_port)
 desk_ext = "200"        # desk phone

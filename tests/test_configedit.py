@@ -178,7 +178,7 @@ def test_each_setting_says_what_to_restart():
 
 def test_autostart_leaves_phone_exe_for_the_vscode_extension():
     config.PHONE_FILE.unlink(missing_ok=True)
-    assert "next time a VS Code window opens" in configedit.set_value("autostart", "on")
+    assert "next time an editor window opens" in configedit.set_value("autostart", "on")
     exe = json.loads(config.PHONE_FILE.read_text(encoding="utf-8"))["exe"]
     assert exe.lower().endswith("phone.exe") and os.path.exists(exe)
 

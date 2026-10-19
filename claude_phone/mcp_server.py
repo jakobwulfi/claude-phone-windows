@@ -136,7 +136,7 @@ async def phone_settings(key: str | None = None) -> str:
 
     Use when {owner} asks about a phone setting: which calendars the meeting alerts read, whether they're on, how
     many minutes before a meeting the warning comes, the caller ID length, their name, how long Claude's calls ring,
-    what the meeting whisper says, or whether claude-phone starts when VS Code opens.
+    what the meeting whisper says, or whether claude-phone starts when an editor opens.
 
     Args:
         key: One setting's name (e.g. "meeting_warn_minutes"). Leave it out to list them all.

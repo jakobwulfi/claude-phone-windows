@@ -210,8 +210,8 @@ app. Pushes pass through the public ntfy.sh server; set `push_text = false` in c
 
 By default nothing starts by itself. Start claude-phone when you want it: type `/claude-phone` in Claude Code (also
 `/claude-phone down`, `restart` or `status`), or run `phone up`. Or turn on `phone config set autostart on`: then
-the VS Code extension runs `phone up` when a window opens and claude-phone isn't running. The services keep running
-after the Claude session or VS Code window that started them ends.
+the VS Code and Visual Studio extensions run `phone up` when a window opens and claude-phone isn't running. The
+services keep running after the Claude session or editor window that started them ends.
 
 ```powershell
 phone up               # FreeSWITCH, whisper-server and the daemon (each also: phone up daemon)
@@ -240,7 +240,7 @@ also be changed without opening it, in three ways:
 | `owner_name` | your name: spoken on calls; the tools become `call_<name>` and `notify_<name>` | up to 40 letters, digits, spaces, dots, apostrophes and dashes |
 | `ring_seconds` | how long Claude's calls ring before voicemail | 10-40 seconds, at most 90 minus `record_seconds` |
 | `whisper_text` | what the meeting whisper says | up to 120 characters |
-| `autostart` | start claude-phone when VS Code opens (false: only with `phone up` or /claude-phone) | on or off |
+| `autostart` | start claude-phone when an editor opens (false: only with `phone up` or /claude-phone) | on or off |
 
 - **Command line:** `phone config` lists them with their values; `phone config get <setting>`,
   `phone config set <setting> <value>`, `phone config unset <setting>` (back to the default).
@@ -271,7 +271,7 @@ kept. Settings that aren't recognised (typos) stay in the file, marked as such, 
 | `~/.claude-phone/models/` | whisper's speech model, downloaded by the first `phone up` |
 | `~/.claude-phone/engines/`, `voices/` | the optional voices `phone voice` adds: each engine's Python packages, and its voice files |
 | `~/.claude-phone/run/` | the services' pid files |
-| `~/.claude-phone/phone.json` | where `phone.exe` is, for the VS Code extension's autostart |
+| `~/.claude-phone/phone.json` | where `phone.exe` is, for the editor extensions' autostart |
 
 ## Tests
 

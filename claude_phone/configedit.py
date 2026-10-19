@@ -24,7 +24,7 @@ APPLIES = {
     "daemon": f"Takes effect after `{RESTART}`.",
     "sessions": f"Takes effect after `{RESTART}`; Claude Code sessions get the new tool names (call_<name>) "
                 "once they are started again.",
-    "vscode": "Takes effect the next time a VS Code window opens.",
+    "editor": "Takes effect the next time an editor window opens (VS Code or Visual Studio).",
 }
 # The whole call_<owner> call must end within Claude Code's 120 s limit for MCP calls.
 RING_PLUS_RECORD_MAX = 90
@@ -106,7 +106,7 @@ SPECS: dict[str, Spec] = {
     "ring_seconds": Spec(f"10-40 seconds, at most {RING_PLUS_RECORD_MAX} minus record_seconds", _ring_seconds,
                          "daemon"),
     "whisper_text": Spec("up to 120 characters", _text(120), "daemon"),
-    "autostart": Spec("on or off", _bool, "vscode"),
+    "autostart": Spec("on or off", _bool, "editor"),
 }
 
 
