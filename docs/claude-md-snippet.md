@@ -1,7 +1,9 @@
 # CLAUDE.md snippet
 
-Paste into `~/.claude/CLAUDE.md` (all repos) or a repo's `CLAUDE.md`. It's written for `owner_name = "Sam"`,
-whose tools are `call_sam` and `notify_sam`: replace `Sam` and `sam` with your name and tool suffix.
+`phone setup` writes this into `~/.claude/CLAUDE.md` for you, with your name filled in, between
+`<!-- claude-phone -->` markers. To do it by hand, paste it into `~/.claude/CLAUDE.md` (all repos) or a repo's
+`CLAUDE.md`. It's written for `owner_name = "Sam"`, whose tools are `call_sam` and `notify_sam`: replace `Sam` and
+`sam` with your name and tool suffix.
 
 ```markdown
 ## Phoning Sam (`call_sam`, `notify_sam`, `transfer_call`)

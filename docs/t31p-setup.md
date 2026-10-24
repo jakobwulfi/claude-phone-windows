@@ -8,10 +8,13 @@ Below, `<phone-ip>` is the phone's address (press **OK** when idle to see it) an
 
 Recommended. The PC's address matters most: FreeSWITCH binds to it and the phone registers to it.
 Reserve it on the router (the PC's MAC is the "Physical Address" of its adapter in `ipconfig /all`), then pin it
+(`phone setup` asks for `lan_ip` when you pick a desk phone, or by hand:)
 in `~/.claude-phone/config.toml` as `lan_ip` and run `phone restart`. `phone status` and the daemon log warn if
 it changes. Reserving the phone's address too is optional.
 
 ## 2. Windows Firewall
+
+`phone setup` does this when you pick a desk phone (one administrator prompt), or by hand:
 
 The phone reaches three things on the PC: SIP and call audio (FreeSWITCH) and the session list (the daemon). From
 an **admin** PowerShell in the repo:
