@@ -10,7 +10,9 @@ installed extension with a higher version, so raise the Visual Studio extension'
 ### Added
 
 - `install.ps1`: installs from a clone in one go (finds or installs Python 3.12, makes `.venv`, installs claude-phone)
-  and hands over to `phone setup`. Run again, it updates and shows what is set up.
+  and hands over to `phone setup`. Run again, it updates and shows what is set up. Without a clone,
+  `irm https://raw.githubusercontent.com/jakobwulfi/claude-phone-windows/main/install.ps1 | iex` installs Git if
+  needed, clones into `%USERPROFILE%\claude-phone-windows` and runs it from there.
 - `phone setup [--all]`: shows what is set up, then asks only about what is missing: settings, which phone rings
   (Linphone, desk phone or both, with the firewall rules for a desk phone), FreeSWITCH and whisper-server (found,
   downloaded and installed, or linked by path), the speech model, the SIP password, the Claude Code wiring, and the

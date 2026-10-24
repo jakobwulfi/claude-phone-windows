@@ -34,7 +34,7 @@ alerts, requests to your calendars' feed links (secret links, kept in Credential
   Not covered: Git Bash in its own window (mintty isn't a Windows console), WSL, SSH, and `claude -p` (it never
   reads the terminal). Run claude-phone and the terminal at the same privilege level: a terminal started as
   administrator can't be typed into by a daemon that isn't (the log says so), and the daemon shouldn't run elevated.
-- Python 3.12+ (the installer offers to get it), and Git to clone the repo. FreeSWITCH, whisper.cpp and ffmpeg are
+- Python 3.12+ and Git (the installer offers to get both). FreeSWITCH, whisper.cpp and ffmpeg are
   installed by setup if you don't have them. About 200 MB of disk for the speech model. Node.js LTS and the .NET SDK
   are only for building the editor extensions yourself, which a release download makes unnecessary.
 - A phone: [Linphone](https://linphone.org) (free) on the same PC, or a SIP desk phone. It's tested on a Yealink
@@ -58,7 +58,18 @@ On any recording: `#` ends it, hanging up also ends it. In voicemail: `#` during
 
 ## Setup
 
-Clone the repo and run the installer in PowerShell:
+Paste this into PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/jakobwulfi/claude-phone-windows/main/install.ps1 | iex
+```
+
+It offers to install Git if you don't have it, clones claude-phone into `%USERPROFILE%\claude-phone-windows` (set
+`$env:CLAUDE_PHONE_DIR` first for another folder) and runs the installer from there. Running the same line again
+updates that install. To read the script before running it, download it first:
+`irm https://raw.githubusercontent.com/jakobwulfi/claude-phone-windows/main/install.ps1 -OutFile install.ps1`.
+
+Or clone it yourself and run the installer from the clone:
 
 ```powershell
 git clone https://github.com/jakobwulfi/claude-phone-windows
@@ -69,7 +80,7 @@ cd claude-phone-windows
 If PowerShell says running scripts is disabled (the default on a fresh Windows), run
 `powershell -ExecutionPolicy Bypass -File .\install.ps1` instead.
 
-It finds Python 3.12 or newer (and offers to install it with winget), makes `.venv`, installs claude-phone and hands
+Either way, the installer finds Python 3.12 or newer (and offers to install it with winget), makes `.venv`, installs claude-phone and hands
 over to `phone setup`. Setup shows what is set up and what isn't, then asks only about what's missing, and you can say
 no to any of it:
 
