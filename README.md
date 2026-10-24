@@ -66,6 +66,9 @@ cd claude-phone-windows
 .\install.ps1
 ```
 
+If PowerShell says running scripts is disabled (the default on a fresh Windows), run
+`powershell -ExecutionPolicy Bypass -File .\install.ps1` instead.
+
 It finds Python 3.12 or newer (and offers to install it with winget), makes `.venv`, installs claude-phone and hands
 over to `phone setup`. Setup shows what is set up and what isn't, then asks only about what's missing, and you can say
 no to any of it:
