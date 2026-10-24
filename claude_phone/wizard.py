@@ -81,11 +81,13 @@ def run_firewall_script(script: Path) -> bool:
 
 @dataclass(frozen=True)
 class Part:
-    """One thing setup can do: `check` says whether it is done, `run` does it (True when done afterwards)."""
+    """One thing setup can do: `check` says whether it is done, `run` does it. `run` returns True when it is done
+    afterwards, False when the user said no (remembered in setup.json, so it isn't asked again), and None when it
+    couldn't be done (a missing tool, a failed download): that is asked again next time."""
     name: str  # also the key in setup.json
     label: str
     check: Callable[[], bool]
-    run: Callable[[], bool]
+    run: Callable[[], bool | None]
     note: Callable[[], str] = lambda: ""  # a few words after the label in the table
 
 
@@ -176,7 +178,7 @@ class Wizard:
                 continue
             if done:
                 self.declined.discard(part.name)
-            else:
+            elif done is False:
                 self.declined.add(part.name)
         save_declines(self.declined)
         if not todo:
@@ -277,7 +279,7 @@ class Wizard:
             configedit.write_setting(key, str(found))
             config.forget()
 
-    def _run_freeswitch(self) -> bool:
+    def _run_freeswitch(self) -> bool | None:
         found = tools.find_freeswitch()
         if found:
             self._save_path("freeswitch_exe", found)
@@ -323,7 +325,7 @@ class Wizard:
             return configured if Path(configured).exists() else None
         return shutil.which("whisper-server")
 
-    def _run_whisper(self) -> bool:
+    def _run_whisper(self) -> bool | None:
         found = tools.find_whisper()
         if found:
             self._save_path("whisper_server", found)
@@ -357,7 +359,7 @@ class Wizard:
             if archive:
                 archive.unlink(missing_ok=True)
 
-    def _run_ffmpeg(self) -> bool:
+    def _run_ffmpeg(self) -> bool | None:
         found = tools.find_ffmpeg()
         if not found:
             if not self.yes("ffmpeg (converts the call audio) isn't installed. Install it with winget (about 100 MB)?"):
@@ -367,12 +369,12 @@ class Wizard:
             if not tools.install_ffmpeg():
                 self.say("winget couldn't install ffmpeg. Is winget installed? Run `winget install Gyan.FFmpeg` "
                          "yourself and open a new terminal.")
-                return False
+                return None
             found = tools.find_ffmpeg()
         if not found:
             self.say("ffmpeg is installed but this window can't find it yet. Open a new terminal and run "
                      "`phone setup` again.")
-            return False
+            return None
         if not tools.ffmpeg_on_path():
             # The services this run starts inherit this PATH; every new terminal has it from winget already.
             os.environ["PATH"] = f"{found.parent}{os.pathsep}{os.environ.get('PATH', '')}"
@@ -383,7 +385,7 @@ class Wizard:
         from . import cli
         return cli.model_path().exists()
 
-    def _run_model(self) -> bool:
+    def _run_model(self) -> bool | None:
         from . import cli
         if not self.yes(f"Download whisper's speech model ({cli.model_path().name}, about 190 MB, once)?"):
             return False
@@ -391,17 +393,17 @@ class Wizard:
             cli.ensure_model(progress=self.progress())
         except (OSError, tools.DownloadError) as e:
             self.say(f"Couldn't download the model: {e}. `phone up` tries again.")
-            return False
+            return None
         return True
 
-    def _link(self, key: str, path: str, expected: str) -> bool:
+    def _link(self, key: str, path: str, expected: str) -> bool | None:
         path = path.strip().strip('"')
         if not Path(path).is_file():
             self.say(f"No file at {path}.")
-            return False
+            return None
         if Path(path).name.lower() != expected.lower():
             self.say(f"That is {Path(path).name}, not {expected}.")
-            return False
+            return None
         configedit.write_setting(key, path)
         config.forget()
         self.say(f"Saved {key}.")
@@ -427,12 +429,12 @@ class Wizard:
         except claudewire.SettingsError:
             return False
 
-    def _run_hooks(self) -> bool:
+    def _run_hooks(self) -> bool | None:
         try:
             current = claudewire.read_settings()
         except claudewire.SettingsError as e:
             self.say(f"Claude Code hooks: {e}")
-            return False
+            return None
         self.say("Claude Code hooks keep claude-phone's list of live sessions current (start, end, prompt, stop) "
                  "and let Claude phone you without asking each time.")
         plan_mode = self.yes("Also let Claude enter plan mode without a terminal prompt, but only when your "
@@ -450,12 +452,12 @@ class Wizard:
         self.say("Done. Claude Code sessions started from now on use the hooks.")
         return True
 
-    def _run_mcp(self) -> bool:
+    def _run_mcp(self) -> bool | None:
         if not self.yes("Register claude-phone's MCP server with Claude Code (the call_ and notify_ tools)?"):
             return False
         ok, message = claudewire.register_mcp(self.exe)
         self.say(f"MCP server: {message}.")
-        return ok
+        return True if ok else None
 
     def _command_done(self) -> bool:
         target = claudewire.claude_dir() / "commands" / "claude-phone.md"
@@ -559,7 +561,7 @@ class Wizard:
             self.say(f"The build failed: {e}")
         return None
 
-    def _run_vscode(self) -> bool:
+    def _run_vscode(self) -> bool | None:
         code = editors.find_code()
         available = editors.available_vscode_version(self.repo)
         installed = editors.vscode_installed_version(code) if code else None
@@ -571,17 +573,17 @@ class Wizard:
             return False
         vsix = self._get_vsix("vscode", editors.build_vscode)
         if vsix is None:
-            return False
+            return None
         installed_ok = editors.install_vscode(code, vsix)
         self._discard(vsix)
         if not installed_ok:
             self.say("`code --install-extension` failed.")
-            return False
+            return None
         self._forget_editor("vscode")
         now = editors.vscode_installed_version(code)
         if now is None or editors.is_older(now, available):
             self.say(f"VS Code still reports version {now or 'none'}, not {available}.")
-            return False
+            return None
         self.say(f"VS Code extension {now} is installed. Reload open VS Code windows (Developer: Reload Window).")
         return True
 
@@ -607,9 +609,9 @@ class Wizard:
                 self._run_visual_studio(only_installed=True)
                 break
 
-    def _run_visual_studio(self, only_installed: bool = False) -> bool:
+    def _run_visual_studio(self, only_installed: bool = False) -> bool | None:
         available = editors.available_visual_studio_version(self.repo)
-        vsix, ok = None, True
+        vsix, declined, failed = None, False, False
         for vs in self._vs_usable():
             installed = editors.vs_installed_version(vs)
             if installed is None and only_installed:
@@ -619,26 +621,27 @@ class Wizard:
             verb = "Install" if installed is None else f"Update ({installed} to {available})"
             if not self.yes(f"{verb} the Visual Studio extension in {vs.name} (session list window, autostart when "
                             "Visual Studio opens)?"):
-                ok = False
+                declined = True
                 continue
             if not self._wait_until_closed(vs):
-                ok = False
+                declined = True
                 continue
             vsix = vsix or self._get_vsix("visualstudio", editors.build_visual_studio)
             if vsix is None:
-                return False
+                return None
+            self.say("Installing: accept the administrator prompt ...")
             installed_ok = editors.install_visual_studio(vs, vsix)
             now = editors.vs_installed_version(vs)
             if not installed_ok or now is None or editors.is_older(now, available):
                 self.say(f"The Visual Studio installer didn't put version {available} into {vs.name} "
                          f"(it reports {now or 'none'}). Open the .vsix by hand: {vsix}")
-                ok = False
+                failed = True
                 continue
             self.say(f"Visual Studio extension {now} is installed in {vs.name}.")
-        if vsix:
+        if vsix and not failed:  # kept when it failed: the message above points the user at it
             self._discard(vsix)
         self._forget_editor("vs")
-        return ok
+        return None if failed else not declined
 
     # --- 8. start and test ---
 

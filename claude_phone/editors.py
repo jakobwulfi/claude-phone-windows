@@ -207,12 +207,15 @@ def visual_studios(run: Callable = subprocess.run) -> list[VisualStudio]:
 
 
 def extension_folders(vs: VisualStudio) -> list[Path]:
-    """The per-user folders Visual Studio unpacks extensions into for this instance."""
+    """The folders Visual Studio unpacks extensions into for this instance. Ours (VisualStudio.Extensibility, out of
+    process) is installed for all users, under the installation's Common7/IDE/VSExtensions (seen on Visual Studio
+    2026); classic VSIX extensions go per user under %LOCALAPPDATA%."""
+    folders = list((vs.path / "Common7" / "IDE" / "VSExtensions").glob("*"))
     local = os.environ.get("LOCALAPPDATA")
     root = Path(local) / "Microsoft" / "VisualStudio" if local else None
-    if not root or not root.is_dir():
-        return []
-    return [ext for instance in root.glob(f"*_{vs.instance_id}") for ext in (instance / "Extensions").glob("*")]
+    if root and root.is_dir():
+        folders += [ext for instance in root.glob(f"*_{vs.instance_id}") for ext in (instance / "Extensions").glob("*")]
+    return folders
 
 
 def vs_installed_version(vs: VisualStudio) -> str | None:
@@ -249,11 +252,10 @@ def build_visual_studio(repo: Path | None = None, run: Callable = subprocess.run
     return vsix
 
 
-def install_visual_studio(vs: VisualStudio, vsix: Path, run: Callable = subprocess.run) -> bool:
-    """Visual Studio must be closed. Whether it took is for the caller to check by reading the version back."""
-    try:
-        done = run([str(vs.installer), "/quiet", f"/instanceIds:{vs.instance_id}", str(vsix)], capture_output=True,
-                   text=True, timeout=300)
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return done.returncode == 0
+def install_visual_studio(vs: VisualStudio, vsix: Path,
+                          elevate: Callable[[str, list[str]], int | None] = tools.run_elevated) -> bool:
+    """Visual Studio must be closed. Our extension installs for all users, into the installation's own folder under
+    Program Files, so the installer runs as administrator (one UAC prompt): on a test laptop the same command without
+    it ended with exit code 1 and installed nothing. Whether it took is for the caller to check by reading the
+    version back."""
+    return elevate(str(vs.installer), ["/quiet", f"/instanceIds:{vs.instance_id}", str(vsix)]) == 0

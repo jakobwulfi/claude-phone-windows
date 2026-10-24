@@ -191,7 +191,7 @@ def test_a_broken_settings_file_is_left_alone(env):
     path.write_text("{oops", encoding="utf-8")
     script = Script()
 
-    assert wizard_for(env, script)._run_hooks() is False
+    assert wizard_for(env, script)._run_hooks() is None
 
     assert path.read_text(encoding="utf-8") == "{oops" and script.questions == []
     assert "isn't valid JSON" in script.output
@@ -209,11 +209,11 @@ def test_freeswitch_and_whisper_are_linked_by_path(env, tmp_path, monkeypatch):
     config.forget()
     assert config.load().freeswitch_exe == str(other)
     assert wizard_for(env, Script("n", ""))._run_freeswitch() is False
-    assert wizard_for(env, Script("n", str(tmp_path / "nothing.exe")))._run_freeswitch() is False
+    assert wizard_for(env, Script("n", str(tmp_path / "nothing.exe")))._run_freeswitch() is None
     wrong = tmp_path / "notepad.exe"
     wrong.write_text("", encoding="utf-8")
     script = Script("n", str(wrong))
-    assert wizard_for(env, script)._run_whisper() is False
+    assert wizard_for(env, script)._run_whisper() is None
     assert "not whisper-server.exe" in script.output
 
 
@@ -334,7 +334,7 @@ def test_a_failed_model_download_is_left_for_phone_up(env, monkeypatch):
     monkeypatch.setattr(cli, "ensure_model", broken)
     script = Script("y")
 
-    assert wizard_for(env, script)._run_model() is False
+    assert wizard_for(env, script)._run_model() is None
     assert "`phone up` tries again" in script.output
 
 
@@ -366,7 +366,7 @@ def test_a_failed_ffmpeg_install_says_what_to_run(env, monkeypatch):
     monkeypatch.setattr(tools, "install_ffmpeg", lambda: False)
     script = Script("y")
 
-    assert wizard_for(env, script)._run_ffmpeg() is False
+    assert wizard_for(env, script)._run_ffmpeg() is None
     assert "winget install Gyan.FFmpeg" in script.output
 
 
@@ -564,7 +564,7 @@ def test_a_missing_build_tool_says_what_to_install(env, editor_world, monkeypatc
     monkeypatch.setattr(editors, "build_vscode", no_npm)
     script = Script("y")
 
-    assert wizard_for(env, script)._run_vscode() is False
+    assert wizard_for(env, script)._run_vscode() is None
     assert "needs Node.js (npm)" in script.output
 
 
@@ -574,7 +574,7 @@ def test_a_failed_build_is_reported(env, editor_world, monkeypatch):
     monkeypatch.setattr(editors, "build_visual_studio", broken)
     script = Script("y")
 
-    assert wizard_for(env, script)._run_visual_studio() is False
+    assert wizard_for(env, script)._run_visual_studio() is None
     assert "The build failed: npm run package failed" in script.output
 
 
@@ -582,7 +582,7 @@ def test_an_installer_that_did_not_take_is_not_reported_as_done(env, editor_worl
     monkeypatch.setattr(editors, "install_visual_studio", lambda vs, file: True)  # exit 0, but the version stays
     script = Script("y")
 
-    assert wizard_for(env, script)._run_visual_studio() is False
+    assert wizard_for(env, script)._run_visual_studio() is None
     assert "didn't put version" in script.output and "Open the .vsix by hand" in script.output
 
 
@@ -601,3 +601,30 @@ def test_an_old_or_other_edition_of_visual_studio_is_named_and_skipped(env, edit
 def test_setup_needs_a_terminal():
     with pytest.raises(SystemExit, match="run it in a terminal"):
         cli.main(["setup"])
+
+
+def test_a_step_that_could_not_be_done_is_asked_again_not_remembered_as_declined(env, monkeypatch):
+    monkeypatch.setattr(tools, "ffmpeg_on_path", lambda: False)
+    monkeypatch.setattr(tools, "find_ffmpeg", lambda: None)
+    monkeypatch.setattr(tools, "install_ffmpeg", lambda: False)  # winget fails
+    # settings, Linphone without the password, ffmpeg yes (fails), hooks with plan mode, MCP, command, CLAUDE.md
+    script = Script(*SETTINGS, "l", "n", "y", "y", "y", "y", "y", "y")
+
+    wizard_for(env, script).run()
+
+    assert "ffmpeg" not in wizard.load_declines()
+    states = {part.name: state for part, state in wizard_for(env, Script()).table()}
+    assert states["ffmpeg"] == wizard.MISSING  # so the next run asks again
+
+
+def test_a_failed_visual_studio_install_keeps_the_vsix_the_message_points_to(env, editor_world, monkeypatch):
+    downloaded = config.HOME / "downloads" / "ClaudePhone.Extension-1.1.0.vsix"
+    downloaded.parent.mkdir(parents=True)
+    downloaded.write_bytes(b"vsix")
+    editor_world["release"] = downloaded
+    monkeypatch.setattr(editors, "install_visual_studio", lambda vs, file: True)  # exit 0, but nothing installed
+    script = Script("y")
+
+    assert wizard_for(env, script)._run_visual_studio() is None
+
+    assert downloaded.exists() and str(downloaded) in script.output

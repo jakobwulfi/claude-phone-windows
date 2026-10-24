@@ -298,7 +298,9 @@ every time and remember only what you declined (`setup.json`), so a run on a fin
   touches nothing else. The `.vsix` comes from the GitHub Release for this clone's version (checked against GitHub's
   sha256), or is built locally. The Visual Studio extension's manifest names only the Community edition, so other
   editions are skipped with a message. Visual Studio must be closed to install an extension; the wizard asks until it
-  is. The versions are compared with trailing zeros ignored (the manifest says `1.1.0.0`, the project `1.1.0`).
+  is. Ours installs for all users, into `<installation>\Common7\IDE\VSExtensions\<random>` under Program Files (not
+  per user like classic extensions), so `VSIXInstaller.exe /quiet` runs as administrator: without that it exited
+  with 1 and installed nothing. The versions are compared with trailing zeros ignored (the manifest says `1.1.0.0`, the project `1.1.0`).
 - **`phone update`.** An editable install picks up new code by itself, so pip runs only when `pyproject.toml` changed,
   through the venv's python. It refuses while Claude sessions run: each one's `phone.exe mcp` holds `phone.exe` open.
   (A test in a throwaway venv showed pip can replace a running console script, by renaming it aside with a warning,

@@ -317,6 +317,18 @@ def test_the_installed_extension_version_is_read_from_this_instances_manifests(t
     assert editors.vs_installed_version(vs()) == "1.1.0.0"
 
 
+def test_an_extension_installed_for_all_users_is_found_in_the_installation(tmp_path, monkeypatch):
+    # Where Visual Studio 2026 put ours when it was installed by hand: Common7/IDE/VSExtensions/<random>.
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    install = tmp_path / "VS" / "18" / "Community"
+    folder = install / "Common7" / "IDE" / "VSExtensions" / "2aw0caai.lax"
+    folder.mkdir(parents=True)
+    (folder / "extension.vsixmanifest").write_text(MANIFEST.format(id=VS_ID, version="1.1.0.0"), encoding="utf-8")
+
+    assert editors.vs_installed_version(vs(path=str(install))) == "1.1.0.0"
+    assert editors.vs_installed_version(vs(path=str(tmp_path / "other"))) is None
+
+
 def test_visual_studio_counts_as_running_only_for_its_own_devenv(monkeypatch):
     class Process:
         def __init__(self, name, exe):
@@ -359,15 +371,16 @@ def test_building_the_visual_studio_extension_without_dotnet_names_the_sdk(tmp_p
     assert caught.value.tool == ".NET SDK"
 
 
-def test_the_vsix_installer_is_pointed_at_the_instance(tmp_path):
+def test_the_vsix_installer_runs_as_administrator_and_is_pointed_at_the_instance(tmp_path):
     seen = []
 
-    def run(argv, **kwargs):
-        seen.append(argv)
-        return done(code=0)
+    def elevate(program, arguments):
+        seen.append((program, arguments))
+        return 0
 
-    assert editors.install_visual_studio(vs(path="C:/VS"), tmp_path / "x.vsix", run=run)
-    installer, *rest = seen[0]
+    assert editors.install_visual_studio(vs(path="C:/VS"), tmp_path / "x.vsix", elevate=elevate)
+    installer, arguments = seen[0]
     assert installer.endswith("VSIXInstaller.exe") and "Common7" in installer
-    assert rest == ["/quiet", "/instanceIds:87bd818d", str(tmp_path / "x.vsix")]
-    assert not editors.install_visual_studio(vs(), tmp_path / "x.vsix", run=lambda *a, **k: done(code=1001))
+    assert arguments == ["/quiet", "/instanceIds:87bd818d", str(tmp_path / "x.vsix")]
+    assert not editors.install_visual_studio(vs(), tmp_path / "x.vsix", elevate=lambda p, a: 1)  # as on the laptop
+    assert not editors.install_visual_studio(vs(), tmp_path / "x.vsix", elevate=lambda p, a: None)  # prompt refused
