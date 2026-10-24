@@ -12,7 +12,7 @@ from typing import ClassVar
 
 import pytest
 
-from claude_phone import cli, config, esl, procs
+from claude_phone import cli, config, esl, procs, tools
 
 
 class FakePopen:
@@ -236,16 +236,35 @@ def test_a_long_model_download_keeps_the_up_lock_fresh(monkeypatch, tmp_path):
     clock = [1000.0]
     monkeypatch.setattr(cli.time, "monotonic", lambda: clock[0])
 
-    def urlretrieve(url, path, reporthook):
-        for _ in range(4):
+    fetched = {}
+
+    def download(url, dest, *, sha256, progress):
+        for done in range(1, 5):
             clock[0] += 20
-            reporthook(1, 8192, 500_000_000)
-        path.write_bytes(b"model")
-    monkeypatch.setattr("urllib.request.urlretrieve", urlretrieve)
+            progress(done, 4)
+        fetched.update(url=url, sha256=sha256)
+        dest.write_bytes(b"model")
+    monkeypatch.setattr(tools, "download", download)
+    monkeypatch.setattr(tools, "hugging_face_checksum", lambda url: (5, "ab" * 32))
     touched = []
     cli.ensure_model(keep_alive=lambda: touched.append(clock[0]))
     assert touched == [1040, 1080]  # every LOCK_TOUCH_S, not every block
     assert cli.model_path().read_bytes() == b"model"
+    assert fetched["sha256"] == "ab" * 32 and fetched["url"].endswith(cli.model_path().name)  # checked against HF's
+
+
+def test_the_model_is_taken_unchecked_when_hugging_face_cant_be_asked(monkeypatch, tmp_path):
+    monkeypatch.setattr(config, "MODELS", tmp_path)
+    got = {}
+
+    def offline(url):
+        raise OSError("no route")
+    monkeypatch.setattr(tools, "hugging_face_checksum", offline)
+    monkeypatch.setattr(tools, "download", lambda url, dest, *, sha256, progress: got.update(sha256=sha256))
+
+    cli.ensure_model()
+
+    assert got == {"sha256": None}
 
 
 def test_a_hook_loads_only_what_it_needs():

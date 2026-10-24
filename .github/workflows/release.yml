@@ -1,0 +1,83 @@
+name: Release
+
+# Push a tag v<version> (the version in pyproject.toml) to publish a GitHub Release with both editor extensions
+# attached. `phone setup` and `phone update` download the .vsix for their own version from here and only build locally
+# when there is no matching release. The three versions move separately (claude-phone, the VS Code extension, the
+# Visual Studio extension); the release notes say which go together.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  release:
+    needs: test
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    defaults:
+      run:
+        shell: pwsh  # PowerShell 7 writes UTF-8 to GITHUB_ENV; Windows PowerShell 5.1's >> would write UTF-16
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: vscode-extension/package-lock.json
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Read the three versions and check the tag
+        run: |
+          $python = python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+          $code = node -p "require('./vscode-extension/package.json').version"
+          $csproj = Get-Content visualstudio-extension/ClaudePhone.Extension/ClaudePhone.Extension.csproj -Raw
+          $vs = [regex]::Match($csproj, '<Version>\s*([\d.]+)\s*</Version>').Groups[1].Value
+          if (-not $python -or -not $code -or -not $vs) { throw "A version could not be read ($python / $code / $vs)." }
+          if ($env:GITHUB_REF_NAME -ne "v$python") {
+            throw "The tag is $env:GITHUB_REF_NAME but pyproject.toml says version $python."
+          }
+          "PYTHON_VERSION=$python" >> $env:GITHUB_ENV
+          "CODE_VERSION=$code" >> $env:GITHUB_ENV
+          "VS_VERSION=$vs" >> $env:GITHUB_ENV
+
+      - name: Build the VS Code extension
+        working-directory: vscode-extension
+        run: |
+          npm ci
+          npm run package
+
+      - name: Build the Visual Studio extension
+        working-directory: visualstudio-extension
+        run: dotnet build ClaudePhone.Extension -c Release
+
+      - name: Collect the files, named as editors.release_asset_name expects
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item "vscode-extension/claude-phone-$env:CODE_VERSION.vsix" "dist/claude-phone-$env:CODE_VERSION.vsix"
+          Copy-Item "visualstudio-extension/ClaudePhone.Extension/bin/Release/net8.0-windows8.0/ClaudePhone.Extension.vsix" "dist/ClaudePhone.Extension-$env:VS_VERSION.vsix"
+          Get-ChildItem dist
+
+      - name: Publish the release
+        run: |
+          $notes = @(
+            "claude-phone $env:PYTHON_VERSION, with these editor extensions (they are versioned on their own):",
+            "",
+            "- VS Code extension $env:CODE_VERSION: claude-phone-$env:CODE_VERSION.vsix",
+            "- Visual Studio extension $env:VS_VERSION: ClaudePhone.Extension-$env:VS_VERSION.vsix",
+            "",
+            "Install with ``.\install.ps1`` from a clone of this tag; it downloads the matching extensions from here.",
+            "See CHANGELOG.md for what changed."
+          ) -join "`n"
+          gh release create $env:GITHUB_REF_NAME dist/* --title "claude-phone $env:PYTHON_VERSION" --notes $notes

@@ -20,20 +20,23 @@ macOS. [Watch the original in action](https://www.instagram.com/reel/DeY8JPmszXs
 
 Everything runs locally on one PC: FreeSWITCH (the phone exchange), whisper.cpp (speech to text), Windows voices
 or ElevenLabs (text to speech), a small Python daemon, and optional VS Code and Visual Studio extensions. Your voice
-never leaves the PC; the only things sent out are text to ElevenLabs, if you choose it, and missed-call pushes, if
-you set them up.
+never leaves the PC. The only things that go out are text to ElevenLabs, if you choose it (also for
+`phone hold-music`, which asks ElevenLabs Music for a tune), missed-call pushes, if you set them up, and, with meeting
+alerts, requests to your calendars' feed links (secret links, kept in Credential Manager).
 
 ## What you need
 
 - Windows 10 or 11. To dial in to a session, Claude Code must run in a **terminal**: VS Code's, Visual Studio's
-  Terminal window, Windows Terminal, or a plain PowerShell or cmd window. Nothing can submit a prompt to the Claude
+  Terminal window, a plain PowerShell or cmd window, or Windows Terminal (it uses the same console route as
+  PowerShell and cmd, but hasn't been tried yet). Nothing can submit a prompt to the Claude
   Code chat panel or the desktop app from outside; sessions there can still call you. With the Claude Code VS Code
   extension, set `"claudeCode.useTerminal": true` so it opens sessions in a terminal.
   Not covered: Git Bash in its own window (mintty isn't a Windows console), WSL, SSH, and `claude -p` (it never
   reads the terminal). Run claude-phone and the terminal at the same privilege level: a terminal started as
   administrator can't be typed into by a daemon that isn't (the log says so), and the daemon shouldn't run elevated.
-- Python 3.12+, ffmpeg, whisper.cpp and FreeSWITCH. Node.js LTS only to build the VS Code extension, and the .NET SDK
-  only to build the Visual Studio one. About 200 MB of disk for the speech model.
+- Python 3.12+ (the installer offers to get it), and Git to clone the repo. FreeSWITCH, whisper.cpp and ffmpeg are
+  installed by setup if you don't have them. About 200 MB of disk for the speech model. Node.js LTS and the .NET SDK
+  are only for building the editor extensions yourself, which a release download makes unnecessary.
 - A phone: [Linphone](https://linphone.org) (free) on the same PC, or a SIP desk phone. It's tested on a Yealink
   T31P ([docs/t31p-setup.md](docs/t31p-setup.md)); a T30 should behave the same but is untested.
 - No accounts or subscriptions. ElevenLabs (nicer voices) and ntfy (missed-call pushes) are optional.
@@ -55,57 +58,55 @@ On any recording: `#` ends it, hanging up also ends it. In voicemail: `#` during
 
 ## Setup
 
-1. **Tools** (then restart VS Code so they're on PATH):
-   ```powershell
-   winget install --id Python.Python.3.13 -e --source winget
-   winget install OpenJS.NodeJS.LTS
-   winget install Gyan.FFmpeg
-   ```
-2. **whisper.cpp:** from its [releases](https://github.com/ggml-org/whisper.cpp/releases), the Windows builds are
-   attached to the build tag published next to each version. Take `whisper-blas-bin-x64.zip` (CPU) or a `cuda` build (NVIDIA), unzip it to `C:\tools\whisper` and add
-   `C:\tools\whisper\Release` to PATH, or set `whisper_server` in config.toml to the full path of
-   `whisper-server.exe`. The first `phone up` downloads the speech model (`small.en`, ~190 MB; about 2 s per
-   answer on a 6-core CPU, see `whisper_model` in config.example.toml for faster or more accurate ones).
-3. **FreeSWITCH:** install the Windows MSI (1.11.x) from the
-   [FreeSWITCH install page](https://developer.signalwire.com/freeswitch/FreeSWITCH-Explained/Installation/Windows-Install_1966780).
-   If it adds a "FreeSWITCH" Windows service, set it to Manual: `phone up` runs FreeSWITCH itself, with its own
-   config (two SIP accounts, nothing else) under `~/.claude-phone/freeswitch`. Allow it through Windows Firewall
-   on private networks when asked.
-4. **Python:** `py -3.13 -m venv .venv`, then `.venv\Scripts\pip install -e .`
-5. **VS Code extension** (types into VS Code's terminals; the other terminals need nothing installed):
-   ```powershell
-   cd vscode-extension; npm install; npm run package
-   code --install-extension (Get-ChildItem *.vsix | Sort-Object LastWriteTime)[-1].FullName
-   ```
-   Reload VS Code. The phone icon in the status bar shows how many sessions claude-phone knows (`off` when it isn't
-   running). Click it for the list, grouped by where each session runs, with its extension; pick one to show its
-   terminal.
+Clone the repo and run the installer in PowerShell:
 
-   **Visual Studio extension** (optional; only lists the sessions): with the .NET SDK,
-   `dotnet build visualstudio-extension\ClaudePhone.Extension -c Release`, close Visual Studio, open the `.vsix` it
-   made in `bin\Release\net8.0-windows8.0`, and start Visual Studio. The button is under Tools → claude-phone and
-   View → Other Windows, and the toolbar under View → Toolbars. Needs Visual Studio 17.14 or newer
-   ([visualstudio-extension/README.md](visualstudio-extension/README.md)).
-6. **Config:** copy `config.example.toml` to `%USERPROFILE%\.claude-phone\config.toml` and set `owner_name`.
-   To test on Linphone on the same PC: `ring_ext = "201"` and `sip_port = 5070` (Linphone keeps 5060 for itself).
-   Then in Linphone add a third-party SIP account: username `201`, password from `phone secret sip`, domain
-   `<your LAN address>:5070` (`phone status` shows the address in its registrations), UDP. Dial **600**: you
-   should hear yourself.
-7. **Secrets** live in Windows Credential Manager (service `claude-phone`): `phone secret sip` prints the SIP
-   password for the phones. ElevenLabs: `ELEVENLABS_API_KEY`, or `phone voice key`.
-8. **Claude Code wiring** (below), and add [docs/claude-md-snippet.md](docs/claude-md-snippet.md) to `~/.claude/CLAUDE.md`.
-   For the `/claude-phone` command, copy [claude/commands/claude-phone.md](claude/commands/claude-phone.md) to
-   `%USERPROFILE%\.claude\commands\` and replace `C:/path/to/claude-phone-windows` in it with your clone.
-9. **Try it:** start `claude` in two terminals (VS Code, Visual Studio's Terminal, Windows Terminal or PowerShell, in
-   any mix). `phone list` shows them as 301 and 302 with where each runs, and
-   `phone type 301 "what is 2+2"` types into the first one while you work in the other.
+```powershell
+git clone https://github.com/jakobwulfi/claude-phone-windows
+cd claude-phone-windows
+.\install.ps1
+```
+
+If PowerShell says running scripts is disabled (the default on a fresh Windows), run
+`powershell -ExecutionPolicy Bypass -File .\install.ps1` instead.
+
+It finds Python 3.12 or newer (and offers to install it with winget), makes `.venv`, installs claude-phone and hands
+over to `phone setup`. Setup shows what is set up and what isn't, then asks only about what's missing, and you can say
+no to any of it:
+
+1. **Your settings:** your name (it becomes the tool names, `call_sam` for "Sam"), how long the phone rings, and a few
+   more. Change them later with `phone config`.
+2. **Which phone rings:** Linphone on this PC, a desk phone, or both. For Linphone it tells you the account settings;
+   for a desk phone it opens the firewall (one administrator prompt) and points at [docs/t31p-setup.md](docs/t31p-setup.md).
+3. **FreeSWITCH, whisper.cpp, ffmpeg and the speech model:** found if they're there, otherwise downloaded and
+   installed after you say yes (FreeSWITCH's installer needs an administrator prompt and is checked against its
+   signature; whisper.cpp and the model against their published checksums).
+4. **The Claude Code wiring:** the hooks, the MCP server, the `/claude-phone` command and a block in your CLAUDE.md
+   telling Claude when to phone you. It shows each change before making it; see [Claude Code wiring](#claude-code-wiring).
+5. **Editor extensions:** for VS Code and Visual Studio, each on its own. They only add the session list and autostart
+   inside the editor; sessions in any terminal work without them.
+6. **Start it,** then dial **600** for the echo test, or start `claude` in two terminals: `phone list` shows them as
+   301 and 302 with where each runs, and `phone type 301 "what is 2+2"` types into the first one while you work in
+   the other.
+
+Run `.\install.ps1` again whenever you like: it pulls a newer claude-phone (not while Claude sessions run), then shows
+the table again. `.\install.ps1 -All` asks about everything again, including what you declined. To do it all by hand:
+[docs/manual-setup.md](docs/manual-setup.md).
+
+**The editor extensions.** In VS Code, the phone icon in the status bar shows how many sessions claude-phone knows
+(`off` when it isn't running). Click it for the list, grouped by where each session runs, with its extension; pick one
+to show its terminal. The Visual Studio extension only lists the sessions: its button is under Tools → claude-phone and
+View → Other Windows, and the toolbar under View → Toolbars (it needs Visual Studio 17.14 or newer, Community edition;
+[visualstudio-extension/README.md](visualstudio-extension/README.md)). With `autostart` on, either one starts
+claude-phone when the editor opens.
 
 ### Claude Code wiring
 
-Five hooks in `%USERPROFILE%\.claude\settings.json` (replace the path with your clone; merge into an existing
-`"hooks"` key). PreToolUse lets Claude call or message you, and enter plan mode when you asked by phone, without a
-prompt (details in [build-notes](docs/build-notes.md)). `phone status` warns about any of these hooks that are
-missing.
+`phone setup` writes all of this for you, after showing the change and keeping `settings.json.bak`; this is what it
+writes and why, for doing it by hand or checking it. Five hooks in `%USERPROFILE%\.claude\settings.json` (replace the
+path with your clone; merge into an existing `"hooks"` key). PreToolUse lets Claude call or message you, and enter plan
+mode when you asked by phone, without a prompt (the plan-mode part of the matcher is optional; details in
+[build-notes](docs/build-notes.md)). `phone status` warns about any of these hooks that are missing, a matcher that
+leaves out the call tools, and a missing MCP server.
 
 ```json
 "hooks": {
@@ -117,8 +118,11 @@ missing.
 }
 ```
 
-The MCP server (the `call_<name>` tools) is registered once calls work:
-`claude mcp add --scope user claude-phone -- C:\path\to\claude-phone-windows\.venv\Scripts\phone.exe mcp`
+The MCP server (the `call_<name>` tools) is registered with
+`claude mcp add --scope user claude-phone -- C:\path\to\claude-phone-windows\.venv\Scripts\phone.exe mcp`. Setup also
+adds the `/claude-phone` command (from [claude/commands/claude-phone.md](claude/commands/claude-phone.md), with your
+paths filled in) and the block from [docs/claude-md-snippet.md](docs/claude-md-snippet.md) in `~/.claude/CLAUDE.md`,
+between `<!-- claude-phone -->` markers so a re-run replaces only that block.
 
 ### Voices
 
@@ -210,7 +214,7 @@ app. Pushes pass through the public ntfy.sh server; set `push_text = false` in c
 
 By default nothing starts by itself. Start claude-phone when you want it: type `/claude-phone` in Claude Code (also
 `/claude-phone down`, `restart` or `status`), or run `phone up`. Or turn on `phone config set autostart on`: then
-the VS Code and Visual Studio extensions run `phone up` when a window opens and claude-phone isn't running. The
+the VS Code and Visual Studio extensions run `phone up` when an editor opens and claude-phone isn't running. The
 services keep running after the Claude session or editor window that started them ends.
 
 ```powershell
@@ -221,10 +225,21 @@ phone type 301 "text"  # type into a session as a phone message would
 phone vm               # pending voicemail questions
 phone restart daemon   # after config changes
 phone down
+phone setup            # what's set up and what isn't, and asks about the rest (--all: ask about everything again)
+phone update           # pull the newest claude-phone and restart it (not while Claude sessions run)
 Get-Content -Wait $HOME\.claude-phone\logs\phone.log   # calls, transcripts, every injection
 ```
 
-`phone` is `.venv\Scripts\phone.exe`.
+`phone` is `.venv\Scripts\phone.exe`. A few more commands, each with `--help`:
+
+```powershell
+phone prerender        # render the fixed phrases in the current voice
+phone meeting-test     # preview a meeting alert (whisper and screen)
+phone hold-music       # generate new hold music with ElevenLabs Music
+phone calendar remove google   # forget a calendar link (also: outlook; add and remove take a source)
+phone secret esl       # print the FreeSWITCH event-socket password (also: sip)
+phone config render    # rewrite the FreeSWITCH config, then phone restart freeswitch
+```
 
 ## Settings
 
@@ -264,6 +279,8 @@ kept. Settings that aren't recognised (typos) stay in the file, marked as such, 
 | `~/.claude-phone/registry.db` | sessions, voicemails, injection log, and whether the daemon switched the phone's DND on (SQLite) |
 | `~/.claude-phone/logs/phone.log` | the log to tail |
 | `~/.claude-phone/logs/{freeswitch,whisper,daemon}.out` | process output |
+| `~/.claude-phone/logs/voiceworker-windows.log` | the Windows voices' PowerShell worker (Piper and Kokoro log to `voiceworker-<engine>.log` too) |
+| `~/.claude-phone/logs/visualstudio-extension.log` | what the Visual Studio extension did at startup and since |
 | `~/.claude-phone/freeswitch/` | generated FreeSWITCH config (from `freeswitch/freeswitch.xml.tmpl` by `phone up` or `phone config render`), its log and database |
 | `~/.claude-phone/recordings/` | what was said on calls: deleted once transcribed; kept 1 day if transcription failed or heard nothing |
 | `~/.claude-phone/bridges/` | one file per VS Code window: how the daemon reaches its terminals |
@@ -272,6 +289,9 @@ kept. Settings that aren't recognised (typos) stay in the file, marked as such, 
 | `~/.claude-phone/engines/`, `voices/` | the optional voices `phone voice` adds: each engine's Python packages, and its voice files |
 | `~/.claude-phone/run/` | the services' pid files |
 | `~/.claude-phone/phone.json` | where `phone.exe` is, for the editor extensions' autostart |
+| `~/.claude-phone/setup.json` | what you declined in `phone setup` (so it doesn't ask again; `--all` does) |
+| `~/.claude-phone/downloads/` | installers `phone setup` is fetching; each is deleted once installed |
+| `~/.claude-phone/engines/whisper.cpp/` | whisper-server, when setup installed it for you |
 
 ## Tests
 
@@ -294,7 +314,11 @@ Lint: `.venv\Scripts\ruff check claude_phone tests` (rules in `pyproject.toml`; 
   something else runs there now), or `that console is elevated` (run the terminal and claude-phone at the same level).
 - **A session isn't listed:** only a `claude` started by hand in a terminal registers. Not `claude -p`, not one that
   another `claude` started, and not Git Bash's own window, WSL or SSH.
-- **`whisper-server not found`:** put its folder on PATH or set `whisper_server` in config.toml.
+- **A session in Visual Studio's Terminal isn't in the list:** start `claude` again so the hooks register it, check
+  `phone list`, and read `~/.claude-phone/logs/visualstudio-extension.log` (the extension's own log).
+- **`whisper-server not found`:** run `phone setup` (it installs or links it), or put its folder on PATH or set
+  `whisper_server` in config.toml.
+- **`ffmpeg not found`:** run `phone setup`, or `winget install Gyan.FFmpeg` and open a new terminal.
 - **Linphone times out registering:** Linphone on the same PC holds UDP 5060 and resets any change to it, so
   FreeSWITCH's replies go astray. Set `sip_port = 5070`, run `phone restart freeswitch`, and use
   `<LAN address>:5070` as Linphone's domain.

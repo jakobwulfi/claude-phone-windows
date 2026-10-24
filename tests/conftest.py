@@ -11,7 +11,7 @@ os.environ["CLAUDE_CONFIG_DIR"] = tempfile.mkdtemp(prefix="cphone-test-claude-")
 
 import pytest
 
-from claude_phone import config, configedit, daemon, esl
+from claude_phone import claudewire, config, configedit, daemon, esl
 
 
 @pytest.fixture(autouse=True)
@@ -30,6 +30,9 @@ def no_live_services(monkeypatch):
     def refused(*args, **kwargs):
         raise ConnectionRefusedError("tests never reach the live FreeSWITCH")
     monkeypatch.setattr(esl, "api_sync", refused)
+    # Nor the real Claude Code: `claude mcp add` would register this checkout's phone.exe for the user.
+    # None is "no answer", as when `claude` isn't installed.
+    monkeypatch.setattr(claudewire, "_run_claude", lambda *args: None)
 
 
 @pytest.fixture(autouse=True)

@@ -17,7 +17,7 @@ from collections.abc import Callable
 import psutil
 
 # keychain (keyring) and urllib.request are imported where they're used: together they were half a hook's start-up.
-from . import config, procs, registry
+from . import claudewire, config, procs, registry
 
 MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/{}"
 
@@ -116,23 +116,30 @@ def model_path() -> Path:
     return config.MODELS / config.load().whisper_model
 
 
-def ensure_model(keep_alive: Callable[[], None] = lambda: None) -> None:
-    """Downloads the speech model if it's missing, calling keep_alive every LOCK_TOUCH_S meanwhile."""
-    import urllib.request
+def ensure_model(keep_alive: Callable[[], None] = lambda: None, progress: Callable[[int, int], None] | None = None,
+                 ) -> None:
+    """Downloads the speech model if it's missing, checked against the sha256 Hugging Face publishes for it, and
+    calling keep_alive every LOCK_TOUCH_S meanwhile."""
+    from . import tools
     p = model_path()
     if p.exists():
         return
+    url = MODEL_URL.format(p.name)
     print(f"downloading {p.name} ...")
-    config.MODELS.mkdir(parents=True, exist_ok=True)
+    try:
+        _, sha256 = tools.hugging_face_checksum(url)
+    except OSError:
+        sha256 = None  # can't ask: take the file unchecked rather than not at all
     last = time.monotonic()
 
-    def progress(blocks: int, block_size: int, total: int) -> None:
+    def touch(done: int, total: int) -> None:
         nonlocal last
         if time.monotonic() - last >= LOCK_TOUCH_S:
             last = time.monotonic()
             keep_alive()
-    urllib.request.urlretrieve(MODEL_URL.format(p.name), p.with_suffix(".part"), reporthook=progress)
-    p.with_suffix(".part").replace(p)
+        if progress:
+            progress(done, total)
+    tools.download(url, p, sha256=sha256, progress=touch)
 
 
 def py_argv(*args: str) -> list[str]:
@@ -258,27 +265,34 @@ def audio_usage() -> str:
             f"(recordings {len(rec)}, speech {len(speech)})")
 
 
-# Claude Code event -> `phone hook` argument. README "Claude Code wiring" has the settings for each.
-HOOKS = {"SessionStart": "session-start", "SessionEnd": "session-end", "UserPromptSubmit": "prompt",
-         "Stop": "stop", "PreToolUse": "pre-tool"}
+# Claude Code event -> `phone hook` argument; claudewire.py has what goes into Claude Code's settings for each.
+HOOKS = claudewire.HOOKS
 HOOK_EVENTS = tuple(HOOKS.values())
-
-
-def claude_settings_file() -> Path:
-    return Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude") / "settings.json"
 
 
 def missing_hooks() -> list[str]:
     """The `phone hook` events that Claude Code's user settings don't run."""
-    try:
-        hooks = json.loads(claude_settings_file().read_text(encoding="utf-8")).get("hooks") or {}
-    except (OSError, ValueError, AttributeError):
-        hooks = {}
+    return claudewire.missing_hooks()
 
-    def wired(event: str, arg: str) -> bool:
-        return any(arg in (h.get("args") or []) or f"hook {arg}" in str(h.get("command", ""))
-                   for entry in hooks.get(event) or [] for h in entry.get("hooks") or [])
-    return [arg for event, arg in HOOKS.items() if not wired(event, arg)]
+
+def claude_wiring_warnings() -> list[str]:
+    """What `phone status` says is wrong with Claude Code's side: hooks, their matcher, the MCP registration."""
+    out = []
+    missing = missing_hooks()
+    if missing:
+        out.append(f"Claude Code's settings ({claudewire.settings_file()}) don't run `phone hook` for "
+                   f"{', '.join(missing)}. Copy those hooks from the README's \"Claude Code wiring\".")
+    elif claudewire.weak_matcher():
+        out.append(f"the pre-tool hook's matcher in {claudewire.settings_file()} leaves out the call and notify "
+                   f"tools, so Claude would ask before phoning. It should include `{claudewire.CALL_MATCHER}`.")
+    exe = Path(sys.executable).with_name("phone.exe")
+    state = claudewire.mcp_state(exe) if exe.exists() else "unknown"
+    if state == "missing":
+        out.append("Claude Code doesn't have the claude-phone MCP server, so there are no call_/notify_ tools. "
+                   f"Register it: claude mcp add --scope user claude-phone -- {exe} mcp")
+    elif state == "other-path":
+        out.append(f"Claude Code's claude-phone MCP server points at another phone.exe than {exe}.")
+    return out
 
 
 def cmd_status(a) -> None:
@@ -287,10 +301,8 @@ def cmd_status(a) -> None:
         print("WARNING:", w)
     for problem in config.problems():
         print(f"WARNING: {config.CONFIG_FILE}: {problem}")
-    missing = missing_hooks()
-    if missing:
-        print(f"WARNING: Claude Code's settings ({claude_settings_file()}) don't run `phone hook` for "
-              f"{', '.join(missing)}. Copy those hooks from the README's \"Claude Code wiring\".")
+    for warning in claude_wiring_warnings():
+        print("WARNING:", warning)
     for n in SERVICES:
         pid = procs.pid(n)
         print(f"{n:9} {'running pid ' + str(pid) if pid else 'stopped'}")
@@ -486,6 +498,35 @@ def cmd_config(a) -> None:
         sys.exit(f"Not changed: {e}" if a.action in ("set", "unset") else str(e))
 
 
+def cmd_setup(a) -> None:
+    from . import wizard
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        sys.exit("phone setup asks questions: run it in a terminal.")
+    try:
+        wizard.Wizard(redo_all=a.all).run()
+    except (EOFError, KeyboardInterrupt):
+        sys.exit("\nStopped. Nothing half-written: run `phone setup` again to pick up where you left off.")
+
+
+def cmd_update(a) -> None:
+    from types import SimpleNamespace
+
+    from . import updater, wizard
+
+    def start() -> None:
+        # A new process, so the services start from the code that was just pulled.
+        subprocess.run([sys.executable, "-c", "from claude_phone.cli import main; main(['up'])"], check=False)
+    ok = updater.Updater(
+        repo=config.REPO,
+        running=lambda: any(procs.pid(name) for name in SERVICES),
+        stop=lambda: cmd_down(SimpleNamespace(only=None)),
+        start=start,
+        offer_editors=wizard.Wizard().offer_editor_updates,
+    ).update()
+    if not ok:
+        sys.exit(1)
+
+
 def cmd_change_phone(a) -> None:
     from . import configedit
     try:
@@ -657,6 +698,11 @@ def main(argv: list[str] | None = None) -> None:
                         help="which phone Claude's calls ring: desk or softphone (none: show)")
     sp.add_argument("phone", nargs="?", choices=["desk", "softphone"], type=str.lower)
     sp.set_defaults(fn=cmd_change_phone)
+    sp = sub.add_parser("setup", help="set claude-phone up: settings, phones, Claude Code wiring (safe to repeat)")
+    sp.add_argument("--all", action="store_true", help="ask about everything again, including what you declined")
+    sp.set_defaults(fn=cmd_setup)
+    sub.add_parser("update", help="pull the newest claude-phone and restart it (not while Claude sessions run)"
+                   ).set_defaults(fn=cmd_update)
     a = p.parse_args(argv)
     if a.cmd == "calendar" and a.action and not a.source:
         p.error(f"phone calendar {a.action} needs a source: {' or '.join(config.CALENDAR_SOURCES)}")

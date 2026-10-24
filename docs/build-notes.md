@@ -1,7 +1,7 @@
 # Build notes
 
-What it took to get each piece working on Windows 10 (VS Code, FreeSWITCH, Linphone), and why. The code already
-does all of this; read it when something breaks. The original macOS version (Asterisk, iTerm2) is upstream at
+What it took to get each piece working on Windows 10 (typing into any terminal, VS Code, Visual Studio, FreeSWITCH,
+Linphone), and why. The code already does all of this; read it when something breaks. The original macOS version (Asterisk, iTerm2) is upstream at
 [risingpower/claude-phone](https://github.com/risingpower/claude-phone).
 
 ## 1. FreeSWITCH instead of Asterisk
@@ -59,8 +59,8 @@ own (the same rhythm as the extension, for the same paste reason). Measured befo
 spike on Windows 10, against a real `claude` with its window in the background: it works in a standalone PowerShell
 window (classic conhost) and in the ConPTY terminals of VS Code and Visual Studio 2026, with æøå and an emoji
 intact (Claude answered `U+1F600`), and text sent while the session is busy waits for its turn. Plain key events
-were enough: no `VK_PACKET`, no key-down-only trick. Windows Terminal wasn't installed to try; its ConPTY should
-behave like the other two. (An emoji read back from the console buffer as a replacement character; that was the
+were enough: no `VK_PACKET`, no key-down-only trick. Windows Terminal uses the same console route but hasn't been
+tried yet (it wasn't installed); its ConPTY should behave like the other two. (An emoji read back from the console buffer as a replacement character; that was the
 spike's screen reader, not the typing.)
 
 - **A process of its own.** Attaching to another console detaches the caller from its own, which would take the
@@ -111,7 +111,7 @@ first):
 - Visual Studio's Terminal: `claude.exe`, `powershell.exe`, `DevHub.exe`, `devenv.exe`, `explorer.exe`
 - VS Code's terminal: `claude.exe`, `powershell.exe`, `Code.exe`, `Code.exe`, `explorer.exe`
 - a standalone PowerShell window: `claude.exe`, `powershell.exe`, then whatever launched the window
-- not seen: Windows Terminal (`WindowsTerminal.exe`, `OpenConsole.exe`) and cmd.
+- not seen, not tried yet: Windows Terminal (`WindowsTerminal.exe`, `OpenConsole.exe`) and cmd.
 
 Esc runs no hook (Stop doesn't fire on an interrupt), so a session would stay "working" and callers would get hold
 music until its next turn. Claude Code writes the interrupt to the session's transcript at once
@@ -256,3 +256,53 @@ network or the phone, or from the PC's CPU scheduling.
   FreeSWITCH's timer. If those lines line up with stutters, look at Windows time sync.
 - **A desk phone** (the T31P, G.722 first) avoids most of this: no jitter buffer competing on the same PC and no
   resampling.
+
+## 11. Editor extensions and autostart
+
+The Visual Studio extension only lists sessions (a tool window that polls the daemon's `GET /sessions` every 15 s);
+it types nothing. Typing into Visual Studio's Terminal is the daemon's console route, with or without the extension.
+
+Both extensions start claude-phone when an editor opens, if `autostart` is on in `config.toml`: they run
+`phone.exe up` without waiting for it. They find `phone.exe` through `~/.claude-phone/phone.json`, which `phone up`
+and `phone config set autostart on` write (only when `phone.exe` sits next to the venv's `python.exe`). Visual Studio
+loads the extension at launch because its `LoadedWhen` is always true, solution or not
+(`ClaudePhoneExtension.cs`); VS Code runs it when a window activates.
+
+Two editors, or two windows, opening together would start the services twice, so `phone up` takes
+`~/.claude-phone/run/up.lock` (created exclusively, treated as stale after 300 s, touched during the model download)
+and the second one prints "another `phone up` is starting claude-phone" and leaves (`cli.py`).
+
+## 12. The installer
+
+`install.ps1` and `phone setup` (`wizard.py`) exist so nobody follows the README by hand. They detect the real state
+every time and remember only what you declined (`setup.json`), so a run on a finished install asks nothing.
+
+- **Why winget, an MSI and a zip.** Python and ffmpeg come from winget (`Python.Python.3.12`, `Gyan.FFmpeg`).
+  FreeSWITCH isn't on winget: its MSIs are listed at files.freeswitch.org and signed by SignalWire, which is the only
+  thing to check them against (no checksum is published), so the wizard asks Windows to verify the Authenticode
+  signature before running it elevated. whisper.cpp's Windows build is a zip on the `b<number>` build tags (the release
+  marked "latest" has no files); GitHub lists a sha256 for each asset and the zip is checked against it. Only
+  `whisper-server.exe` and its DLLs are unpacked (the zip holds about 40 other programs). The speech model is checked
+  against the sha256 Hugging Face gives in the redirect of its `resolve` URL.
+- **FreeSWITCH's service.** The MSI may register a Windows service that holds the SIP port. The elevated install step
+  stops it and sets it to Manual, because `phone up` runs FreeSWITCH itself with its own config.
+- **Why a merge with a backup.** `settings.json` is the user's: setup adds the five hooks after showing the change,
+  keeps every other key and hook, writes `settings.json.bak` first, and writes nothing when the hooks are there
+  already. A file that isn't valid JSON is left alone. Claude can't do this itself (its auto-mode classifier blocks
+  edits to its own settings), so it is the wizard, in the user's own terminal. The CLAUDE.md snippet sits between
+  `<!-- claude-phone -->` markers, so a re-run replaces only that block; a hand-pasted copy is noticed and not
+  duplicated without asking. The SIP password is shown only when asked for.
+- **Editors are independent.** VS Code is found through `code --list-extensions --show-versions`, Visual Studio through
+  `vswhere` plus the `extension.vsixmanifest` of each installed extension (under
+  `%LOCALAPPDATA%\Microsoft\VisualStudio\<version>_<instance id>\Extensions`). Adding one editor's extension later
+  touches nothing else. The `.vsix` comes from the GitHub Release for this clone's version (checked against GitHub's
+  sha256), or is built locally. The Visual Studio extension's manifest names only the Community edition, so other
+  editions are skipped with a message. Visual Studio must be closed to install an extension; the wizard asks until it
+  is. Ours installs for all users, into `<installation>\Common7\IDE\VSExtensions\<random>` under Program Files (not
+  per user like classic extensions), so `VSIXInstaller.exe /quiet` runs as administrator: without that it exited
+  with 1 and installed nothing. The versions are compared with trailing zeros ignored (the manifest says `1.1.0.0`, the project `1.1.0`).
+- **`phone update`.** An editable install picks up new code by itself, so pip runs only when `pyproject.toml` changed,
+  through the venv's python. It refuses while Claude sessions run: each one's `phone.exe mcp` holds `phone.exe` open.
+  (A test in a throwaway venv showed pip can replace a running console script, by renaming it aside with a warning,
+  but that was one measurement.) The services are stopped before pip and started again afterwards in a fresh process,
+  whatever pip did.
